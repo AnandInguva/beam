@@ -1320,3 +1320,29 @@ class RunnerResult(runner.PipelineResult):
       self._monitoring_metrics = FnApiMetrics(
           self._monitoring_infos_by_stage, user_metrics_only=False)
     return self._monitoring_metrics
+
+  def find_all(self):
+    if self._metrics is None:
+      self._metrics = FnApiMetrics(
+          self._monitoring_infos_by_stage, user_metrics_only=True)
+
+    result = {}
+    result.update(self._metrics._counters)
+    result.update(self._metrics._distributions)
+    result.update(self._metrics._gauges)
+    return result
+
+  def find_one(self, filter=None):
+    if self._metrics is None:
+      self._metrics = FnApiMetrics(
+          self._monitoring_infos_by_stage, user_metrics_only=True)
+    # query the metric with a given filter
+    results = self._metrics.query(filter=filter)
+    if results[self._metrics.COUNTERS]:
+      return results[self._metrics.COUNTERS][0]
+    # check if the filter is in Distributions
+    if results[self._metrics.DISTRIBUTIONS]:
+      return results[self._metrics.DISTRIBUTIONS][0]
+    # check if the filter is in Gauges
+    if results[self._metrics.GAUGES]:
+      return results[self._metrics.GAUGES][0]

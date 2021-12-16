@@ -131,6 +131,15 @@ def main(argv=None, save_main_session=True):
       word_lengths_dist = query_result['distributions'][0]
       logging.info('average word length: %d', word_lengths_dist.result.mean)
 
+    # Query metrics with find_all
+    all_metrics_results = result.find_all()
+    logging.info(all_metrics_results)
+
+    # Query with find_one
+    empty_lines_filter = MetricsFilter().with_name('empty_lines')
+    empty_lines_counter = result.find_one(filter=empty_lines_filter)
+    logging.info(empty_lines_counter)
+
 
 if __name__ == '__main__':
   logging.getLogger().setLevel(logging.INFO)
