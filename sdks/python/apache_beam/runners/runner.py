@@ -423,3 +423,21 @@ class PipelineResult(object):
     _LOGGER.warning(
         '%s does not implement aggregated_values', self.__class__.__name__)
     return {}
+
+  def find_one(self, filter=None):
+    """Returns MetricKey by querying the metric that matches the filter
+      from the runner.
+
+      Args:
+        filter(MetricsFilter): A MetricsFilter object to query metrics based
+          on name, namespace and steps.
+      Returns:
+        MetricKey of the metric matching with the filter.
+
+    """
+    raise NotImplementedError
+
+  def find_all(self):
+    """Returns all the user defined Metrics in a dict
+    """
+    raise NotImplementedError
