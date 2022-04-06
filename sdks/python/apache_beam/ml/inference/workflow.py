@@ -35,6 +35,7 @@ from PIL import Image
 from typing import Any
 from typing import Iterable
 from typing import List
+from typing import Tuple
 from typing import Union
 from tfx_bsl.public.beam import RunInference
 from tfx_bsl.public.proto import model_spec_pb2
@@ -69,8 +70,12 @@ class ExampleProcessor:
 
 
 class PostProcessor(beam.DoFn):
-  def process(self, element: prediction_log_pb2.PredictionLog):
-    predict_log = element.predict_log
+  def process(self, element: Union[Any, prediction_log_pb2.PredictionLog]):
+    filename = None
+    if type(element) == tuple:
+      filename, predict_log = element[0], element[1].predict_log
+    else:
+      predict_log = element.predict_log
     # Not returning input_value because it's an array and doesn't make sense
     # input_value = tf.train.Example.FromString(predict_log.request.inputs['examples'].string_val[0])
     output_value = predict_log.response.outputs
@@ -78,6 +83,8 @@ class PostProcessor(beam.DoFn):
         tf.io.decode_raw(
             output_value['output_0'].tensor_content, out_type=tf.float32))
     max_index_output_tensor = tf.math.argmax(output_tensor, axis=0)
+    if filename:
+      yield {filename: max_index_output_tensor}
     yield max_index_output_tensor
 
 
@@ -88,26 +95,16 @@ def setup_pipeline(p: beam.Pipeline, args):
       # p | 'Read the input file' >> beam.io.ReadFromText(args.input)
       | 'Parse and read files from the input_file' >> beam.Map(_read_image))
 
-  filenames = (
-      filename_value_pair
-      | 'Get filenames' >> beam.MapTuple(lambda a, b: a))
-
-  data_values = (
-      filename_value_pair
-      | 'Get arrays of the files' >> beam.MapTuple(lambda a, b: b))
-
   predictions = (
-      data_values
+      filename_value_pair
       | 'Convert np.array to tf.train.example' >>
-      beam.Map(lambda x: ExampleProcessor().create_examples(x))
+      beam.Map(lambda x: (x[0], ExampleProcessor().create_examples(x[1])))
       | 'TFX RunInference' >> RunInference(
           model_spec_pb2.InferenceSpecType(
               saved_model_spec=model_spec_pb2.SavedModelSpec(
                   model_path=args.model_path)))
       | "Parse output" >> beam.ParDo(PostProcessor())
       | beam.Map(print))
-
-  (filenames, predictions) >> beam.Map(print)
 
 
 def parse_known_args(argv):
