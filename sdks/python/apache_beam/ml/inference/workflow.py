@@ -19,27 +19,19 @@
 
 import argparse
 import io
-import logging
 import os
 
 import apache_beam as beam
 import numpy as np
 import tensorflow as tf
-import tfx_bsl
 
 from apache_beam.io.filesystems import FileSystems
 from apache_beam.options.pipeline_options import PipelineOptions
-from apache_beam.testing import synthetic_pipeline
-from google.cloud.storage import Client
+from apache_beam.options.pipeline_options import SetupOptions
 from PIL import Image
 from typing import Any
-from typing import Iterable
-from typing import List
-from typing import Tuple
-from typing import Union
 from tfx_bsl.public.beam import RunInference
 from tfx_bsl.public.proto import model_spec_pb2
-from tensorflow_serving.apis import prediction_log_pb2
 
 #########################################
 _SAMPLES_DIR = '/Users/anandinguva/Desktop/samples'
@@ -70,22 +62,24 @@ class ExampleProcessor:
 
 
 class PostProcessor(beam.DoFn):
-  def process(self, element: Union[Any, prediction_log_pb2.PredictionLog]):
-    filename = None
-    if type(element) == tuple:
-      filename, predict_log = element[0], element[1].predict_log
-    else:
-      predict_log = element.predict_log
-    # Not returning input_value because it's an array and doesn't make sense
-    # input_value = tf.train.Example.FromString(predict_log.request.inputs['examples'].string_val[0])
+  def process(self, element):
+    filename, predict_log = element[0], element[1].predict_log
     output_value = predict_log.response.outputs
     output_tensor = (
         tf.io.decode_raw(
             output_value['output_0'].tensor_content, out_type=tf.float32))
     max_index_output_tensor = tf.math.argmax(output_tensor, axis=0)
-    if filename:
-      yield {filename: max_index_output_tensor}
-    yield max_index_output_tensor
+    yield filename, max_index_output_tensor
+
+
+class WriteToGCS(beam.DoFn):
+  def __init__(self, output):
+    self._output = output
+    if not FileSystems().exists(output):
+      FileSystems().create(output)
+
+  def process(self, element: tuple):
+    filename, prediction = element[0], element[1]
 
 
 def setup_pipeline(p: beam.Pipeline, args):
@@ -131,10 +125,12 @@ def parse_known_args(argv):
   return parser.parse_known_args(argv)
 
 
-def run(argv=None):
+def run(argv=None, save_main_session=True):
   """Entry point. Defines and runs the pipeline."""
   known_args, pipeline_args = parse_known_args(argv)
-  with beam.Pipeline(argv=pipeline_args) as p:
+  pipeline_options = PipelineOptions(pipeline_args=pipeline_args)
+  pipeline_options.view_as(SetupOptions).save_main_session = True
+  with beam.Pipeline(options=pipeline_options) as p:
     setup_pipeline(p, known_args)
 
 

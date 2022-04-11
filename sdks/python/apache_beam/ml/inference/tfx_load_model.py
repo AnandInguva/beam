@@ -19,27 +19,9 @@
 import argparse
 
 import tensorflow as tf
-from tensorflow import keras
-from tensorflow_serving.apis import prediction_log_pb2
-
-import apache_beam as beam
-import tfx_bsl
-from tfx_bsl.public.beam import RunInference
-from tfx_bsl.public import tfxio
-from tfx_bsl.public.proto import model_spec_pb2
-
 import numpy as np
 
-from typing import Dict, Text, Any, Tuple, List
-
-from apache_beam.options.pipeline_options import PipelineOptions
 _INPUT_SHAPE = (224, 224, 3)
-# input_layer = keras.layers.Input(shape=_INPUT_SHAPE,
-#                                  dtype=tf.float32,
-#                                  name='x')
-# mid_layer = keras.layers.Flatten()(input_layer)
-# output_layer= keras.layers.Dense(1)(mid_layer)
-# model = keras.Model(input_layer, output_layer)
 
 model = tf.keras.applications.MobileNet(input_shape=_INPUT_SHAPE)
 
@@ -60,7 +42,20 @@ def serve_tf_examples_fn(serialized_tf_examples):
   return model(features, training=False)
 
 
-# NEW MODEL PATH
-new_model_path = '/Users/anandinguva/Desktop/custom_model/2'
-signature = {'serving_default': serve_tf_examples_fn}
-tf.saved_model.save(model, new_model_path, signatures=signature)
+def run(args):
+  path_to_save_model = args.path_to_save_model
+  signature = {'serving_default': serve_tf_examples_fn}
+  # save the model with Signature compatible with TFX RunInference
+  tf.saved_model.save(model, path_to_save_model, signatures=signature)
+
+
+if __name__ == '__main__':
+  parser = argparse.ArgumentParser()
+  parser.add_argument(
+      '--saved_model_path',
+      default=None,
+      help='Saved tf model without any configuration')
+  parser.add_argument(
+      '--path_to_save_model',
+      required=True,
+      help='Path to save the configured model')
