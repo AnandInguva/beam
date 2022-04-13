@@ -25,7 +25,7 @@ import apache_beam as beam
 import numpy as np
 import tensorflow as tf
 
-from apache_beam.io.filesystems import FileSystems
+from apache_beam.io.filesystems import GCSFileSystem
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.options.pipeline_options import SetupOptions
 from PIL import Image
@@ -34,20 +34,30 @@ from tfx_bsl.public.beam import RunInference
 from tfx_bsl.public.proto import model_spec_pb2
 
 #########################################
-_SAMPLES_DIR = '/Users/anandinguva/Desktop/samples'
-_SAMPLES = [os.path.join(_SAMPLES_DIR, i) for i in os.listdir(_SAMPLES_DIR)]
+_SAMPLES_DIR = 'gs://clouddfe-anandinguva/imagenet_data/train'
 #########################################
 
 _IMG_SIZE = (224, 224, 3)
 
 
-def _read_image(path_to_file: str, file_dir: str = None) -> Any:
-  # path_to_file = os.path.join(file_dir, path_to_file)
-  with FileSystems.open(path_to_file, 'r') as file:
+def _read_image(
+    path_to_file: str, file_dir: str, options: PipelineOptions) -> Any:
+
+  path_to_file = os.path.join(file_dir, path_to_file)
+  with GCSFileSystem(pipeline_options=options).open(path_to_file, 'r') as file:
     data = Image.open(io.BytesIO(file.read()))
     return path_to_file, np.asarray(np.resize(data,
-                                    new_shape=_IMG_SIZE,
-                                    ), dtype=np.float32)
+                                              new_shape=_IMG_SIZE,
+                                              ), dtype=np.float32)
+
+
+class ReadImageFromGCS(beam.DoFn):
+  def __init__(self, options):
+    self._options = options
+
+  def process(self, path_to_file):
+    yield _read_image(
+        path_to_file, file_dir=_SAMPLES_DIR, options=self._options)
 
 
 class ExampleProcessor:
@@ -72,44 +82,41 @@ class PostProcessor(beam.DoFn):
     yield filename, max_index_output_tensor
 
 
-class WriteToGCS(beam.DoFn):
-  def __init__(self, output):
-    self._output = output
-    if not FileSystems().exists(output):
-      FileSystems().create(output)
-
-  def process(self, element: tuple):
-    filename, prediction = element[0], element[1]
-
-
-def setup_pipeline(p: beam.Pipeline, args):
+def setup_pipeline(options: PipelineOptions, args):
   """Sets up dataflow pipeline based on specified arguments"""
-  filename_value_pair = (
-      p | "Create list of image names" >> beam.Create(_SAMPLES)
-      # p | 'Read the input file' >> beam.io.ReadFromText(args.input)
-      | 'Parse and read files from the input_file' >> beam.Map(_read_image))
+  with beam.Pipeline(options=options) as p:
+    filename_value_pair = (
+        # p | "Create list of image names" >> beam.Create(_SAMPLES)
+        p | 'Read the input file' >> beam.io.ReadFromText(args.input)
+        | 'Parse and read files from the input_file' >> beam.ParDo(
+            ReadImageFromGCS(options=options)))
 
-  predictions = (
-      filename_value_pair
-      | 'Convert np.array to tf.train.example' >>
-      beam.Map(lambda x: (x[0], ExampleProcessor().create_examples(x[1])))
-      | 'TFX RunInference' >> RunInference(
-          model_spec_pb2.InferenceSpecType(
-              saved_model_spec=model_spec_pb2.SavedModelSpec(
-                  model_path=args.model_path)))
-      | "Parse output" >> beam.ParDo(PostProcessor())
-      | beam.Map(print))
+    predictions = (
+        filename_value_pair
+        | 'Convert np.array to tf.train.example' >>
+        beam.Map(lambda x: (x[0], ExampleProcessor().create_examples(x[1])))
+        | 'TFX RunInference' >> RunInference(
+            model_spec_pb2.InferenceSpecType(
+                saved_model_spec=model_spec_pb2.SavedModelSpec(
+                    model_path=args.model_path)))
+        | "Parse output" >> beam.ParDo(PostProcessor()))
+
+    predictions | "Write output to GCS" >> beam.io.WriteToText(
+        args.output,
+        file_name_suffix='.csv',
+        shard_name_template='',
+        append_trailing_newlines=True)
 
 
 def parse_known_args(argv):
   """Parses args for the workflow."""
   parser = argparse.ArgumentParser()
 
-  # parser.add_argument(
-  #   '--input',
-  #   dest='input',
-  #   required=True,
-  #   help='A file containing images names and other metadata in columns')
+  parser.add_argument(
+      '--input',
+      dest='input',
+      required=True,
+      help='A file containing images names and other metadata in columns')
   parser.add_argument(
       '--output', dest='output', help='Output path for output files.')
   parser.add_argument(
@@ -129,9 +136,8 @@ def run(argv=None, save_main_session=True):
   """Entry point. Defines and runs the pipeline."""
   known_args, pipeline_args = parse_known_args(argv)
   pipeline_options = PipelineOptions(pipeline_args=pipeline_args)
-  pipeline_options.view_as(SetupOptions).save_main_session = True
-  with beam.Pipeline(options=pipeline_options) as p:
-    setup_pipeline(p, known_args)
+  pipeline_options.view_as(SetupOptions).save_main_session = save_main_session
+  setup_pipeline(pipeline_options, known_args)
 
 
 if __name__ == '__main__':
