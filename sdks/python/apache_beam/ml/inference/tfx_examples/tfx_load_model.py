@@ -21,29 +21,33 @@ import argparse
 import tensorflow as tf
 import numpy as np
 
-_INPUT_SHAPE = (224, 224, 3)
-
-model = tf.keras.applications.MobileNet(input_shape=_INPUT_SHAPE)
+_INPUT_SHAPE = [224, 224, 3]
 
 RAW_DATA_PREDICT_SPEC = {
     'x': tf.io.VarLenFeature(dtype=np.float32),
 }
 
 
-@tf.function(
-    input_signature=[
-        tf.TensorSpec(shape=[None], dtype=tf.string, name='examples')
-    ])
-def serve_tf_examples_fn(serialized_tf_examples):
-  """Returns the output to be used in the serving signature."""
-  features = tf.io.parse_example(serialized_tf_examples, RAW_DATA_PREDICT_SPEC)
-  features = tf.sparse.to_dense(features['x'], default_value=0)
-  features = tf.reshape(features, [-1, 224, 224, 3])
-  return model(features, training=False)
-
-
 def run(args):
   path_to_save_model = args.path_to_save_model
+  if not args.saved_model_path:
+    model = tf.keras.applications.MobileNet(include_top=False)
+  else:
+    model = tf.saved_model.load(args.saved_model_path)
+
+  @tf.function(
+      input_signature=[
+          tf.TensorSpec(shape=[None], dtype=tf.string, name='examples')
+      ])
+  def serve_tf_examples_fn(serialized_tf_examples):
+    """Returns the output to be used in the serving signature."""
+    features = tf.io.parse_example(
+        serialized_tf_examples, RAW_DATA_PREDICT_SPEC)
+    features = tf.sparse.to_dense(features['x'], default_value=0)
+    extended_shape = [-1] + _INPUT_SHAPE
+    features = tf.reshape(features, extended_shape)
+    return model(features, training=False)
+
   signature = {'serving_default': serve_tf_examples_fn}
   # save the model with Signature compatible with TFX RunInference
   tf.saved_model.save(model, path_to_save_model, signatures=signature)
@@ -59,3 +63,5 @@ if __name__ == '__main__':
       '--path_to_save_model',
       required=True,
       help='Path to save the configured model')
+  known_args, _ = parser.parse_known_args()
+  run(known_args)
