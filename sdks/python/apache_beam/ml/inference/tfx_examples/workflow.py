@@ -28,37 +28,32 @@ import tensorflow as tf
 from apache_beam.io.filesystems import FileSystems
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.options.pipeline_options import SetupOptions
+from functools import partial
 from PIL import Image
 from typing import Any
 from tfx_bsl.public.beam import RunInference
 from tfx_bsl.public.proto import model_spec_pb2
 
 #########################################
-_SAMPLES_DIR = 'gs://clouddfe-anandinguva/train'
+_SAMPLES_DIR = 'gs://clouddfe-anandinguva/imagenet_data/train'
 # _SAMPLES_DIR = '/Users/anandinguva/Desktop/train'
 #########################################
 
 _IMG_SIZE = (224, 224, 3)
 
 
-def _read_image(
-    path_to_file: str, file_dir: str, options: PipelineOptions) -> Any:
+def _read_image(path_to_file: str, file_dir: str) -> Any:
 
   path_to_file = os.path.join(file_dir, path_to_file)
   with FileSystems().open(path_to_file, 'r') as file:
     data = Image.open(io.BytesIO(file.read()))
-    return path_to_file, np.asarray(np.resize(data,
-                                              new_shape=_IMG_SIZE,
-                                              ), dtype=np.float32)
+    return path_to_file, data
 
 
-class ReadImageFromGCS(beam.DoFn):
-  def __init__(self, options):
-    self._options = options
-
-  def process(self, path_to_file):
-    yield _read_image(
-        path_to_file, file_dir=_SAMPLES_DIR, options=self._options)
+def _resize_image(data):
+  return data[0], np.asarray(np.resize(data[1],
+                             new_shape=_IMG_SIZE),
+                             dtype=np.float32)
 
 
 class ExampleProcessor:
@@ -90,11 +85,11 @@ def setup_pipeline(options: PipelineOptions, args):
         p | 'Read the input file' >> beam.io.ReadFromText(
             args.input, skip_header_lines=1)
         | 'Get file name to read' >> beam.Map(
-            lambda x: x.split(',')[1])  # refactor csv file
-        | 'Parse and read files from the input_file' >> beam.ParDo(
-            ReadImageFromGCS(options=options)))
-    #
-    #
+            lambda x: x.split(',')[0])  # refactor csv file
+        | 'Parse and read files from the input_file' >> beam.Map(
+            partial(_read_image, file_dir=_SAMPLES_DIR))
+        | 'Resize the data' >> beam.Map(_resize_image))
+
     predictions = (
         filename_value_pair
         | 'Convert np.array to tf.train.example' >>
@@ -104,15 +99,12 @@ def setup_pipeline(options: PipelineOptions, args):
                 saved_model_spec=model_spec_pb2.SavedModelSpec(
                     model_path=args.model_path)))
         | "Parse output" >> beam.ParDo(PostProcessor()))
-    #
-    # predictions | beam.Map(print)
+
     predictions | "Write output to GCS" >> beam.io.WriteToText(
         args.output,
         file_name_suffix='.csv',
         shard_name_template='',
         append_trailing_newlines=True)
-
-    predictions | beam.Map(print)
 
 
 def parse_known_args(argv):
@@ -129,7 +121,7 @@ def parse_known_args(argv):
   parser.add_argument(
       '--model_path',
       dest='model_path',
-      default='/Users/anandinguva/Desktop/custom_model/2',
+      default='/Users/anandinguva/Desktop/custom_model/mobilenet_model_testing',
       help='Path to load the model.')
   parser.add_argument(
       '--benchmark_type',
