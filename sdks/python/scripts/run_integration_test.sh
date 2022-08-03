@@ -80,6 +80,7 @@ KMS_KEY_NAME="projects/apache-beam-testing/locations/global/keyRings/beam-it/cry
 SUITE=""
 COLLECT_MARKERS=
 REQUIREMENTS_FILE=""
+MACHINE_TYPE=""
 
 # Default test (pytest) options.
 # Run WordCountIT.test_wordcount_it by default if no test options are
@@ -116,10 +117,10 @@ case $key in
         shift # past value
         ;;
     --requirements_file)
-      REQUIREMENTS_FILE="$2"
-      shift # past argument
-      shift # past value
-      ;;
+        REQUIREMENTS_FILE="$2"
+        shift # past argument
+        shift # past value
+        ;;
     --num_workers)
         NUM_WORKERS="$2"
         shift # past argument
@@ -155,6 +156,21 @@ case $key in
         shift # past argument
         shift # past value
         ;;
+    --machine_type)
+        MACHINE_TYPE="$2"
+        shift # past argument
+        shift # past value
+        ;;
+    --sdk_container_image)
+        SDK_CONTAINER_IMAGE="$2"
+        shift # past argument
+        shift # past value
+        ;;
+    --experiments)
+      EXPERIMENTS="$2"
+      shift # past argument
+      shift # past value
+      ;;
     --pipeline_opts)
         PIPELINE_OPTS="$2"
         shift # past argument
@@ -240,6 +256,18 @@ if [[ -z $PIPELINE_OPTS ]]; then
     "--num_workers=$NUM_WORKERS"
     "--sleep_secs=$SLEEP_SECS"
   )
+
+  if [[ ! -z "$SDK_CONTAINER_IMAGE" ]]; then
+    opts+=("--sdk_container_image=$SDK_CONTAINER_IMAGE")
+  fi
+
+  if [[ ! -z "$EXPERIMENTS" ]]; then
+    opts+=("--experiments=$EXPERIMENTS")
+  fi
+
+  if [[ ! -z "$MACHINE_TYPE" ]]; then
+    opts+=("--machine_type=$MACHINE_TYPE")
+  fi
 
   # Add --streaming if provided
   if [[ "$STREAMING" = true ]]; then
