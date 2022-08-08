@@ -18,10 +18,18 @@
 
 evaluationDependsOn(':runners:google-cloud-dataflow-java:worker')
 enablePythonPerformanceTest()
+applyDockerNature()
 
 String pythonVersionSuffix = project.ext.pythonVersion
         ? "-py${project.ext.pythonVersion.replace('.', '')}"
         : ''
+
+def dataflowProject = 'apache-beam-testing'
+def pythonVer = project.project(':sdks:python').pythonVersion.replace('.', '')
+def dockerImageRoot = "us.gcr.io/${dataflowProject}/python-postcommit-it"
+def dockerPythonImageContainer = "${dockerImageRoot}/python"
+def dockerTag = new Date().format('yyyyMMddHHmmss')
+def dockerPythonImageName = "${dockerPythonImageContainer}:${dockerTag}"
 
 dependencies {
   distTarBall project(path: ":sdks:python", configuration: "distTarBall")
@@ -365,48 +373,55 @@ task validatesContainer() {
   }
 }
 
-def tensorRTTests = tasks.register("tensorRTtests") {
-  dependsOn 'installGcpTest'
-  dependsOn ':sdks:python:sdist'
-  def dockerfile = "${rootDir}/sdks/python/apache_beam/ml/inference/tensorrt_dev.dockerfile"
-  def dataflowProject = 'apache-beam-testing'
-  def pythonVer = project.project(':sdks:python').pythonVersion.replace('.', '')
-  def dockerImageRoot = "us.gcr.io/${dataflowProject}/python-postcommit-it"
-  def dockerPythonImageContainer = "${dockerImageRoot}/python"
-  def dockerTag = new Date().format('yyyyMMddHHmmss')
-  def dockerPythonImageName = "${dockerPythonImageContainer}:${dockerTag}"
-  doFirst{
+def buildTensorRTDockerImage = tasks.register('buildTensorRTDockerImage') {
+  doFirst {
     exec {
       commandLine "docker", "build", ".", "-f", "${dockerfile}", "-t", "${dockerPythonImageName}"
-      }
+    }
     exec {
       commandLine "docker", "push", "${dockerPythonImageName}"
     }
-    def testOpts = basicPytestOpts
+  }
+}
+
+docker {
+  def dockerfile = "${rootDir}/sdks/python/apache_beam/ml/inference/tensorrt_dev.dockerfile"
+  name dockerPythonImageName
+  files dockerfile
+  buildArgs(['py_version': "${project.ext.pythonVersion}"])
+}
+
+def tensorRTTests = tasks.register("tensorRTtests") {
+//   dependsOn 'installGcpTest'
+  dependsOn ':sdks:python:sdist'
+  dependsOn 'docker'
+ doLast {
+    def sdk_location = files(configurations.distTarBall.files).singleFile
     def argMap = [
-      "test_opts": testOpts,
-      "runner": "TestDataflowRunner",
-      "machine_type":"n1-standard-4",
-      "sdk_container_image": "${dockerPythonImageName}",
-      "sdk_location": files(configurations.distTarBall.files).singleFile,
-      "collect": "uses_tensorrt and it_postcommit",
-      "suite": "postCommitIT-df${pythonVersionSuffix}"
+      "input": "gs://apache-beam-testing-yeandy/tensorrt_image_file_names.txt",
+      "output": "gs://apache-beam-ml/outputs/tensorrt_predictions.txt",
+      "engine_path": "gs://apache-beam-ml/models/ssd_mobilenet_v2_320x320_coco17_tpu-8.trt",
+      "runner": "DataflowRunner",
+      "machine_type": "n1-standard-4",
+      "project":"apache-beam-testing",
+      "region": "us-central1",
+     "temp_location": "gs://apache-beam-testing-yeandy/tmp/",
+      "sdk_location": "${sdk_location}",
+      "sdk_container_image": "${dockerPythonImageName}"
     ]
     def cmdArgs = mapToArgString(argMap)
     exec {
       executable 'sh'
-      args '-c', ". ${envdir}/bin/activate && pip install pillow>=8.0.0 &&${runScriptsDir}/run_integration_test.sh ${cmdArgs}"
+      args '-c', ". pip install pillow>=8.0 &&  python -m apache_beam.examples.inference.tensorrt_object_detection $cmdArgs --experiment=use_runner_v2,worker_accelerator=type:nvidia-tesla-t4;count:1;install-nvidia-driver"
       }
-    }
- doLast {
     exec {
       commandLine "docker", "rmi", "--force", "${dockerPythonImageName}"
     }
     exec {
       commandLine "gcloud", "--quiet", "container", "images", "untag", "${dockerPythonImageName}"
     }
-    exec {
-      commandLine "./scripts/cleanup_untagged_gcr_images.sh", "${dockerPythonImageContainer}"
-    }
+//     exec {
+//       commandLine "./scripts/cleanup_untagged_gcr_images.sh", "${dockerPythonImageContainer}"
+//     }
   }
 }

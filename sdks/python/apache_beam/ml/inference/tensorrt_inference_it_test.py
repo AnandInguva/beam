@@ -36,7 +36,7 @@ class TensorRTRunInferenceTest(unittest.TestCase):
     test_pipeline = TestPipeline(is_integration_test=True)
     # TODO: change the input, output to a different bucket
     input = "gs://apache-beam-testing-yeandy/tensorrt_image_file_names.txt"
-    output = "gs://apache-beam-testing-yeandy/tensorrt_predictions.txt"
+    output = "gs://apache-beam-ml/tmp/tensorrt_predictions.txt"
     engine_path = "gs://apache-beam-ml/models/ssd_mobilenet_v2_320x320_coco17_tpu-8.trt"  # pylint: disable=line-too-long
     extra_opts = {
         "input": input,
