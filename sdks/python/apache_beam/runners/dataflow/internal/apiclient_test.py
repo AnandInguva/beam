@@ -27,6 +27,7 @@ import sys
 import unittest
 
 import mock
+# import pytest
 
 from apache_beam.io.filesystems import FileSystems
 from apache_beam.metrics.cells import DistributionData
@@ -608,10 +609,6 @@ class UtilTest(unittest.TestCase):
       for experiment in env.proto.experiments:
         self.assertNotIn('runner_harness_container_image=', experiment)
 
-  @mock.patch(
-      'apache_beam.runners.dataflow.internal.apiclient.'
-      'beam_version.__version__',
-      '2.2.0')
   def test_harness_override_custom_in_released_sdks(self):
     pipeline_options = PipelineOptions([
         '--temp_location',
@@ -1032,7 +1029,7 @@ class UtilTest(unittest.TestCase):
 
   @mock.patch(
       'apache_beam.runners.dataflow.internal.apiclient.sys.version_info',
-      (3, 10, 0))
+      (3, 11, 0))
   @mock.patch(
       'apache_beam.runners.dataflow.internal.apiclient.'
       'beam_version.__version__',
