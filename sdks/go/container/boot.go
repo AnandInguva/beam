@@ -17,15 +17,26 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/artifact"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime"
+
+	// Import gcs filesystem so that it can be used to upload heap dumps
+	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/io/filesystem/gcs"
+	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
+	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/provision"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/util/diagnostics"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/util/execx"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/util/grpcx"
 )
@@ -40,6 +51,30 @@ var (
 	controlEndpoint   = flag.String("control_endpoint", "", "Local control endpoint for FnHarness (required).")
 	semiPersistDir    = flag.String("semi_persist_dir", "/tmp", "Local semi-persistent directory (optional).")
 )
+
+const (
+	cloudProfilingJobName           = "CLOUD_PROF_JOB_NAME"
+	cloudProfilingJobID             = "CLOUD_PROF_JOB_ID"
+	enableGoogleCloudProfilerOption = "enable_google_cloud_profiler"
+)
+
+func configureGoogleCloudProfilerEnvVars(metadata map[string]string) error {
+	if metadata == nil {
+		return errors.New("enable_google_cloud_profiler is set to true, but no metadata is received from provision server, profiling will not be enabled")
+	}
+	jobName, nameExists := metadata["job_name"]
+	if !nameExists {
+		return errors.New("required job_name missing from metadata, profiling will not be enabled without it")
+	}
+	jobID, idExists := metadata["job_id"]
+	if !idExists {
+		return errors.New("required job_id missing from metadata, profiling will not be enabled without it")
+	}
+	os.Setenv(cloudProfilingJobName, jobName)
+	os.Setenv(cloudProfilingJobID, jobID)
+	log.Printf("Cloud Profiling Job Name: %v, Job IDL %v", jobName, jobID)
+	return nil
+}
 
 func main() {
 	flag.Parse()
@@ -58,25 +93,9 @@ func main() {
 	}
 	log.Printf("Provision info:\n%v", info)
 
-	// TODO(BEAM-8201): Simplify once flags are no longer used.
-	if info.GetLoggingEndpoint().GetUrl() != "" {
-		*loggingEndpoint = info.GetLoggingEndpoint().GetUrl()
-	}
-	if info.GetArtifactEndpoint().GetUrl() != "" {
-		*artifactEndpoint = info.GetArtifactEndpoint().GetUrl()
-	}
-	if info.GetControlEndpoint().GetUrl() != "" {
-		*controlEndpoint = info.GetControlEndpoint().GetUrl()
-	}
-
-	if *loggingEndpoint == "" {
-		log.Fatal("No logging endpoint provided.")
-	}
-	if *artifactEndpoint == "" {
-		log.Fatal("No artifact endpoint provided.")
-	}
-	if *controlEndpoint == "" {
-		log.Fatal("No control endpoint provided.")
+	err = ensureEndpointsSet(info)
+	if err != nil {
+		log.Fatalf("Endpoint not set: %v", err)
 	}
 	log.Printf("Initializing Go harness: %v", strings.Join(os.Args, " "))
 
@@ -99,26 +118,9 @@ func main() {
 		log.Fatalf("Failed to retrieve staged files: %v", err)
 	}
 
-	const worker = "worker"
-	name := worker
-
-	switch len(artifacts) {
-	case 0:
-		log.Fatal("No artifacts staged")
-	case 1:
-		name, _ = artifact.MustExtractFilePayload(artifacts[0])
-	default:
-		found := false
-		for _, a := range artifacts {
-			n, _ := artifact.MustExtractFilePayload(a)
-			if n == worker {
-				found = true
-				break
-			}
-		}
-		if !found {
-			log.Fatalf("No artifact named '%v' found", worker)
-		}
+	name, err := getGoWorkerArtifactName(artifacts)
+	if err != nil {
+		log.Fatalf("Failed to get Go Worker Artifact Name: %v", err)
 	}
 
 	// (3) The persist dir may be on a noexec volume, so we must
@@ -137,10 +139,88 @@ func main() {
 		"--options=" + options,
 	}
 	if info.GetStatusEndpoint() != nil {
-		args = append(args, "--status_endpoint="+info.GetStatusEndpoint().GetUrl())
+		os.Setenv("STATUS_ENDPOINT", info.GetStatusEndpoint().GetUrl())
 	}
 
-	log.Fatalf("User program exited: %v", execx.Execute(prog, args...))
+	if len(info.GetRunnerCapabilities()) > 0 {
+		os.Setenv("RUNNER_CAPABILITIES", strings.Join(info.GetRunnerCapabilities(), " "))
+	}
+
+	enableGoogleCloudProfiler := strings.Contains(options, enableGoogleCloudProfilerOption)
+	if enableGoogleCloudProfiler {
+		err := configureGoogleCloudProfilerEnvVars(info.Metadata)
+		if err != nil {
+			log.Printf("could not configure Google Cloud Profiler variables, got %v", err)
+		}
+	}
+
+	err = execx.Execute(prog, args...)
+
+	if err != nil {
+		var opt runtime.RawOptionsWrapper
+		err := json.Unmarshal([]byte(options), &opt)
+		if err == nil {
+			if tempLocation, ok := opt.Options.Options["temp_location"]; ok {
+				diagnostics.UploadHeapProfile(ctx, fmt.Sprintf("%v/heapProfiles/profile-%v-%d", strings.TrimSuffix(tempLocation, "/"), *id, time.Now().Unix()))
+			}
+		}
+	}
+
+	log.Fatalf("User program exited: %v", err)
+}
+
+func getGoWorkerArtifactName(artifacts []*pipepb.ArtifactInformation) (string, error) {
+	const worker = "worker"
+	name := worker
+
+	switch len(artifacts) {
+	case 0:
+		return "", errors.New("no artifacts staged")
+	case 1:
+		name, _ = artifact.MustExtractFilePayload(artifacts[0])
+		return name, nil
+	default:
+		for _, a := range artifacts {
+			if a.GetRoleUrn() == artifact.URNGoWorkerBinaryRole {
+				name, _ = artifact.MustExtractFilePayload(a)
+				return name, nil
+			}
+		}
+		// TODO(https://github.com/apache/beam/issues/21459): Remove legacy hack once aged out.
+		for _, a := range artifacts {
+			n, _ := artifact.MustExtractFilePayload(a)
+			if n == worker {
+				log.Printf("Go worker binary found with legacy name '%v'", worker)
+				return n, nil
+			}
+		}
+		return "", fmt.Errorf("no artifact named '%v' found", worker)
+	}
+}
+
+func ensureEndpointsSet(info *fnpb.ProvisionInfo) error {
+	// TODO(BEAM-8201): Simplify once flags are no longer used.
+	if info.GetLoggingEndpoint().GetUrl() != "" {
+		*loggingEndpoint = info.GetLoggingEndpoint().GetUrl()
+	}
+	if info.GetArtifactEndpoint().GetUrl() != "" {
+		*artifactEndpoint = info.GetArtifactEndpoint().GetUrl()
+	}
+	if info.GetControlEndpoint().GetUrl() != "" {
+		*controlEndpoint = info.GetControlEndpoint().GetUrl()
+	}
+
+	if *loggingEndpoint == "" {
+		return errors.New("no logging endpoint provided")
+	}
+	if *artifactEndpoint == "" {
+		return errors.New("no artifact endpoint provided")
+	}
+	if *controlEndpoint == "" {
+		return errors.New("no control endpoint provided")
+	}
+
+	return nil
 }
 
 func copyExe(from, to string) error {

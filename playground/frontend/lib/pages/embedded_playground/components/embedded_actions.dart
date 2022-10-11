@@ -16,18 +16,21 @@
  * limitations under the License.
  */
 
+// ignore_for_file: unsafe_html
+
+import 'dart:html' as html;
+
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter_gen/gen_l10n/app_localizations.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import 'package:playground/components/toggle_theme_button/toggle_theme_icon_button.dart';
 import 'package:playground/constants/assets.dart';
 import 'package:playground/constants/params.dart';
 import 'package:playground/constants/sizes.dart';
-import 'package:playground/pages/playground/states/playground_state.dart';
+import 'package:playground/modules/messages/models/set_content_message.dart';
+import 'package:playground/utils/javascript_post_message.dart';
+import 'package:playground_components/playground_components.dart';
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 
-const kPlaygroundText = 'Try in Playground';
 const kTryPlaygroundButtonWidth = 200.0;
 const kTryPlaygroundButtonHeight = 40.0;
 
@@ -36,36 +39,35 @@ class EmbeddedActions extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Wrap(
-      runSpacing: kMdSpacing,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      alignment: WrapAlignment.end,
-      children: [
-        const ToggleThemeIconButton(),
-        IconButton(
-          iconSize: kIconSizeLg,
-          splashRadius: kIconButtonSplashRadius,
-          icon: SvgPicture.asset(kCopyIconAsset),
-          onPressed: () {
-            final source =
-                Provider.of<PlaygroundState>(context, listen: false).source;
-            Clipboard.setData(ClipboardData(text: source));
-          },
-        ),
-        ElevatedButton.icon(
-          style: ButtonStyle(
-            fixedSize: MaterialStateProperty.all(
-              const Size(kTryPlaygroundButtonWidth, kTryPlaygroundButtonHeight),
-            ),
+    return Padding(
+      padding: const EdgeInsets.all(kMdSpacing),
+      child: SizedBox(
+        width: kTryPlaygroundButtonWidth,
+        height: kTryPlaygroundButtonHeight,
+        child: Consumer<PlaygroundController>(
+          builder: (context, controller, child) => ElevatedButton.icon(
+            icon: SvgPicture.asset(kLinkIconAsset),
+            label: Text(AppLocalizations.of(context)!.tryInPlayground),
+            onPressed: () => _openStandalonePlayground(controller),
           ),
-          icon: SvgPicture.asset(kLinkIconAsset),
-          label: const Text(kPlaygroundText),
-          onPressed: () {
-            final exampleId = Uri.base.queryParameters[kExampleParam];
-            launch('/?$kExampleParam=$exampleId');
-          },
         ),
-      ],
+      ),
+    );
+  }
+
+  void _openStandalonePlayground(PlaygroundController controller) {
+    // The empty list forces the parsing of EmptyExampleLoadingDescriptor
+    // and prevents the glimpse of the default catalog example.
+    final window = html.window.open(
+      '/?$kExamplesParam=[]&$kSdkParam=${controller.sdk?.id}',
+      '',
+    );
+
+    javaScriptPostMessageRepeated(
+      window,
+      SetContentMessage(
+        descriptor: controller.getLoadingDescriptor(),
+      ),
     );
   }
 }

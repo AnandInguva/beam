@@ -19,6 +19,7 @@ package org.apache.beam.runners.dataflow.worker;
 
 import java.io.IOException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import javax.annotation.concurrent.ThreadSafe;
 import org.apache.beam.sdk.io.UnboundedSource;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions;
@@ -36,7 +37,7 @@ import org.slf4j.LoggerFactory;
  */
 @ThreadSafe
 @SuppressWarnings({
-  "nullness" // TODO(https://issues.apache.org/jira/browse/BEAM-10402)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
 })
 class ReaderCache {
 
@@ -70,7 +71,7 @@ class ReaderCache {
     this.invalidationExecutor = invalidationExecutor;
     this.cache =
         CacheBuilder.newBuilder()
-            .expireAfterWrite(java.time.Duration.ofMillis(cacheDuration.getMillis()))
+            .expireAfterWrite(cacheDuration.getMillis(), TimeUnit.MILLISECONDS)
             .removalListener(
                 (RemovalNotification<WindmillComputationKey, CacheEntry> notification) -> {
                   if (notification.getCause() != RemovalCause.EXPLICIT) {

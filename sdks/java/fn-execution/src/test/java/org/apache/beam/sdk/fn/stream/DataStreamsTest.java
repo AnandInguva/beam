@@ -38,7 +38,8 @@ import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.fn.stream.DataStreams.DataStreamDecoder;
 import org.apache.beam.sdk.fn.stream.DataStreams.ElementDelimitedOutputStream;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
-import org.apache.beam.vendor.grpc.v1p36p0.com.google.protobuf.ByteString;
+import org.apache.beam.sdk.util.ByteStringOutputStream;
+import org.apache.beam.vendor.grpc.v1p48p1.com.google.protobuf.ByteString;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Iterators;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.io.ByteStreams;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.io.CountingOutputStream;
@@ -118,31 +119,7 @@ public class DataStreamsTest {
     }
 
     @Test
-    public void testSeekToNextByteString() throws Exception {
-      DataStreamDecoder<String> decoder =
-          new DataStreamDecoder<>(
-              StringUtf8Coder.of(),
-              new PrefetchableIteratorsTest.ReadyAfterPrefetchUntilNext<>(
-                  Iterators.forArray(
-                      encode("A"), encode("B", "C"), encode("D"), encode("E", "F"), encode("G"))));
-
-      // Seek and load the next byte string
-      decoder.seekToNextByteString();
-      assertTrue(decoder.isReady());
-      assertEquals("A", decoder.next());
-      assertEquals("B", decoder.next());
-      // Seek when in the middle of a byte string skipping "C"
-      decoder.seekToNextByteString();
-      assertEquals("D", decoder.next());
-      // Seek when at the end of "D"
-      decoder.seekToNextByteString();
-      // Seek when at the beginning of "E" skipping "E"
-      decoder.seekToNextByteString(); // at the beginning of "E"
-      assertEquals("G", decoder.next());
-    }
-
-    @Test
-    public void testDecodeRemainderInCurrentChunk() throws Exception {
+    public void testDecodeFromChunkBoundaryToChunkBoundary() throws Exception {
       ByteString multipleElementsToSplit = encode("B", "BigElementC");
       ByteString singleElementToSplit = encode("BigElementG");
       DataStreamDecoder<String> decoder =
@@ -159,23 +136,17 @@ public class DataStreamsTest {
                       singleElementToSplit.substring(0, singleElementToSplit.size() - 1),
                       singleElementToSplit.substring(singleElementToSplit.size() - 1))));
 
-      decoder.seekToNextByteString();
-      assertThat(decoder.decodeTillAtChunkBoundary(), contains("A"));
-      decoder.seekToNextByteString();
-      assertThat(decoder.decodeTillAtChunkBoundary(), contains("B", "BigElementC"));
-      decoder.seekToNextByteString();
-      assertThat(decoder.decodeTillAtChunkBoundary(), contains("D"));
-      decoder.seekToNextByteString();
-      assertThat(decoder.decodeTillAtChunkBoundary(), is(empty()));
-      decoder.seekToNextByteString();
-      assertThat(decoder.decodeTillAtChunkBoundary(), contains("E", "F"));
-      decoder.seekToNextByteString();
-      assertThat(decoder.decodeTillAtChunkBoundary(), contains("BigElementG"));
+      assertThat(decoder.decodeFromChunkBoundaryToChunkBoundary(), contains("A"));
+      assertThat(decoder.decodeFromChunkBoundaryToChunkBoundary(), contains("B", "BigElementC"));
+      assertThat(decoder.decodeFromChunkBoundaryToChunkBoundary(), contains("D"));
+      assertThat(decoder.decodeFromChunkBoundaryToChunkBoundary(), is(empty()));
+      assertThat(decoder.decodeFromChunkBoundaryToChunkBoundary(), contains("E", "F"));
+      assertThat(decoder.decodeFromChunkBoundaryToChunkBoundary(), contains("BigElementG"));
       assertFalse(decoder.hasNext());
     }
 
     private ByteString encode(String... values) throws IOException {
-      ByteString.Output out = ByteString.newOutput();
+      ByteStringOutputStream out = new ByteStringOutputStream();
       for (String value : values) {
         StringUtf8Coder.of().encode(value, out);
       }
@@ -183,7 +154,7 @@ public class DataStreamsTest {
     }
 
     private <T> void testDecoderWith(Coder<T> coder, T... expected) throws IOException {
-      ByteString.Output output = ByteString.newOutput();
+      ByteStringOutputStream output = new ByteStringOutputStream();
       for (T value : expected) {
         int size = output.size();
         coder.encode(value, output);

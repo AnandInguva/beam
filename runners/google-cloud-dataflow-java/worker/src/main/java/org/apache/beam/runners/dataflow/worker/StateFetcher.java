@@ -20,11 +20,11 @@ package org.apache.beam.runners.dataflow.worker;
 import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkState;
 
 import java.io.Closeable;
-import java.time.Duration;
 import java.util.Collections;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 import org.apache.beam.runners.core.InMemoryMultimapSideInputView;
 import org.apache.beam.runners.dataflow.worker.windmill.Windmill;
 import org.apache.beam.sdk.coders.Coder;
@@ -35,10 +35,10 @@ import org.apache.beam.sdk.transforms.Materializations.IterableView;
 import org.apache.beam.sdk.transforms.Materializations.MultimapView;
 import org.apache.beam.sdk.transforms.ViewFn;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
+import org.apache.beam.sdk.util.ByteStringOutputStream;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.WindowingStrategy;
-import org.apache.beam.vendor.grpc.v1p36p0.com.google.protobuf.ByteString;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Optional;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Supplier;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.cache.Cache;
@@ -51,8 +51,8 @@ import org.slf4j.LoggerFactory;
 
 /** Class responsible for fetching state from the windmill server. */
 @SuppressWarnings({
-  "rawtypes", // TODO(https://issues.apache.org/jira/browse/BEAM-10556)
-  "nullness" // TODO(https://issues.apache.org/jira/browse/BEAM-10402)
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
 })
 class StateFetcher {
   private static final Set<String> SUPPORTED_MATERIALIZATIONS =
@@ -71,7 +71,7 @@ class StateFetcher {
         server,
         CacheBuilder.newBuilder()
             .maximumWeight(100000000 /* 100 MB */)
-            .expireAfterWrite(Duration.ofMinutes(1))
+            .expireAfterWrite(1, TimeUnit.MINUTES)
             .weigher((Weigher<SideInputId, SideInputCacheEntry>) (id, entry) -> entry.size())
             .build());
   }
@@ -124,7 +124,7 @@ class StateFetcher {
 
           Coder<SideWindowT> windowCoder = sideWindowStrategy.getWindowFn().windowCoder();
 
-          ByteString.Output windowStream = ByteString.newOutput();
+          ByteStringOutputStream windowStream = new ByteStringOutputStream();
           windowCoder.encode(sideWindow, windowStream, Coder.Context.OUTER);
 
           @SuppressWarnings("unchecked")

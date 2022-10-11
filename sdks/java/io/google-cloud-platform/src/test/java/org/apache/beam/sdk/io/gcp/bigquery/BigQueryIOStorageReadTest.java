@@ -25,6 +25,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -92,20 +93,30 @@ import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.TableRowParser;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.TypedRead;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.TypedRead.Method;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryServices.StorageClient;
+import org.apache.beam.sdk.io.gcp.bigquery.BigQueryUtils.ConversionOptions;
 import org.apache.beam.sdk.io.gcp.testing.FakeBigQueryServices;
 import org.apache.beam.sdk.io.gcp.testing.FakeBigQueryServices.FakeBigQueryServerStream;
 import org.apache.beam.sdk.io.gcp.testing.FakeDatasetService;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
+import org.apache.beam.sdk.schemas.FieldAccessDescriptor;
+import org.apache.beam.sdk.schemas.SchemaCoder;
+import org.apache.beam.sdk.schemas.transforms.Convert;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
+import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.values.KV;
+import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.Row;
+import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableMap;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Lists;
+import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -269,9 +280,13 @@ public class BigQueryIOStorageReadTest {
         BigQueryIO.read(new TableRowParser())
             .withCoder(TableRowJsonCoder.of())
             .withMethod(Method.DIRECT_READ)
+            .withSelectedFields(ImmutableList.of("foo", "bar"))
+            .withProjectionPushdownApplied()
             .from(tableSpec);
     DisplayData displayData = DisplayData.from(typedRead);
     assertThat(displayData, hasDisplayItem("table", tableSpec));
+    assertThat(displayData, hasDisplayItem("selectedFields", "foo, bar"));
+    assertThat(displayData, hasDisplayItem("projectionPushdownApplied", true));
   }
 
   @Test
@@ -1468,6 +1483,82 @@ public class BigQueryIOStorageReadTest {
   }
 
   @Test
+  public void testReadFromBigQueryIOWithBeamSchema() throws Exception {
+    fakeDatasetService.createDataset("foo.com:project", "dataset", "", "", null);
+    TableReference tableRef = BigQueryHelpers.parseTableSpec("foo.com:project:dataset.table");
+    Table table = new Table().setTableReference(tableRef).setNumBytes(10L).setSchema(TABLE_SCHEMA);
+    fakeDatasetService.createTable(table);
+
+    CreateReadSessionRequest expectedCreateReadSessionRequest =
+        CreateReadSessionRequest.newBuilder()
+            .setParent("projects/project-id")
+            .setReadSession(
+                ReadSession.newBuilder()
+                    .setTable("projects/foo.com:project/datasets/dataset/tables/table")
+                    .setReadOptions(
+                        ReadSession.TableReadOptions.newBuilder().addSelectedFields("name"))
+                    .setDataFormat(DataFormat.AVRO))
+            .setMaxStreamCount(10)
+            .build();
+
+    ReadSession readSession =
+        ReadSession.newBuilder()
+            .setName("readSessionName")
+            .setAvroSchema(AvroSchema.newBuilder().setSchema(TRIMMED_AVRO_SCHEMA_STRING))
+            .addStreams(ReadStream.newBuilder().setName("streamName"))
+            .setDataFormat(DataFormat.AVRO)
+            .build();
+
+    ReadRowsRequest expectedReadRowsRequest =
+        ReadRowsRequest.newBuilder().setReadStream("streamName").build();
+
+    List<GenericRecord> records =
+        Lists.newArrayList(
+            createRecord("A", TRIMMED_AVRO_SCHEMA),
+            createRecord("B", TRIMMED_AVRO_SCHEMA),
+            createRecord("C", TRIMMED_AVRO_SCHEMA),
+            createRecord("D", TRIMMED_AVRO_SCHEMA));
+
+    List<ReadRowsResponse> readRowsResponses =
+        Lists.newArrayList(
+            createResponse(TRIMMED_AVRO_SCHEMA, records.subList(0, 2), 0.0, 0.50),
+            createResponse(TRIMMED_AVRO_SCHEMA, records.subList(2, 4), 0.5, 0.75));
+
+    StorageClient fakeStorageClient = mock(StorageClient.class, withSettings().serializable());
+    when(fakeStorageClient.createReadSession(expectedCreateReadSessionRequest))
+        .thenReturn(readSession);
+    when(fakeStorageClient.readRows(expectedReadRowsRequest, ""))
+        .thenReturn(new FakeBigQueryServerStream<>(readRowsResponses));
+
+    PCollection<Row> output =
+        p.apply(
+                BigQueryIO.readTableRowsWithSchema()
+                    .from("foo.com:project:dataset.table")
+                    .withMethod(Method.DIRECT_READ)
+                    .withSelectedFields(Lists.newArrayList("name"))
+                    .withFormat(DataFormat.AVRO)
+                    .withTestServices(
+                        new FakeBigQueryServices()
+                            .withDatasetService(fakeDatasetService)
+                            .withStorageClient(fakeStorageClient)))
+            .apply(Convert.toRows());
+
+    org.apache.beam.sdk.schemas.Schema beamSchema =
+        org.apache.beam.sdk.schemas.Schema.of(
+            org.apache.beam.sdk.schemas.Schema.Field.of(
+                "name", org.apache.beam.sdk.schemas.Schema.FieldType.STRING));
+    PAssert.that(output)
+        .containsInAnyOrder(
+            ImmutableList.of(
+                Row.withSchema(beamSchema).addValue("A").build(),
+                Row.withSchema(beamSchema).addValue("B").build(),
+                Row.withSchema(beamSchema).addValue("C").build(),
+                Row.withSchema(beamSchema).addValue("D").build()));
+
+    p.run();
+  }
+
+  @Test
   public void testReadFromBigQueryIOArrow() throws Exception {
     fakeDatasetService.createDataset("foo.com:project", "dataset", "", "", null);
     TableReference tableRef = BigQueryHelpers.parseTableSpec("foo.com:project:dataset.table");
@@ -2062,6 +2153,57 @@ public class BigQueryIOStorageReadTest {
     assertTrue(parent.advance());
     assertEquals("E", parent.getCurrent().get("name"));
     assertFalse(parent.advance());
+  }
+
+  @Test
+  public void testActuateProjectionPushdown() {
+    org.apache.beam.sdk.schemas.Schema schema =
+        org.apache.beam.sdk.schemas.Schema.builder()
+            .addStringField("foo")
+            .addStringField("bar")
+            .build();
+    TypedRead<Row> read =
+        BigQueryIO.read(
+                record ->
+                    BigQueryUtils.toBeamRow(
+                        record.getRecord(), schema, ConversionOptions.builder().build()))
+            .withMethod(Method.DIRECT_READ)
+            .withCoder(SchemaCoder.of(schema));
+
+    assertTrue(read.supportsProjectionPushdown());
+    PTransform<PBegin, PCollection<Row>> pushdownT =
+        read.actuateProjectionPushdown(
+            ImmutableMap.of(new TupleTag<>("output"), FieldAccessDescriptor.withFieldNames("foo")));
+
+    TypedRead<Row> pushdownRead = (TypedRead<Row>) pushdownT;
+    assertEquals(Method.DIRECT_READ, pushdownRead.getMethod());
+    assertThat(pushdownRead.getSelectedFields().get(), Matchers.containsInAnyOrder("foo"));
+    assertTrue(pushdownRead.getProjectionPushdownApplied());
+  }
+
+  @Test
+  public void testReadFromQueryDoesNotSupportProjectionPushdown() {
+    org.apache.beam.sdk.schemas.Schema schema =
+        org.apache.beam.sdk.schemas.Schema.builder()
+            .addStringField("foo")
+            .addStringField("bar")
+            .build();
+    TypedRead<Row> read =
+        BigQueryIO.read(
+                record ->
+                    BigQueryUtils.toBeamRow(
+                        record.getRecord(), schema, ConversionOptions.builder().build()))
+            .fromQuery("SELECT bar FROM `dataset.table`")
+            .withMethod(Method.DIRECT_READ)
+            .withCoder(SchemaCoder.of(schema));
+
+    assertFalse(read.supportsProjectionPushdown());
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            read.actuateProjectionPushdown(
+                ImmutableMap.of(
+                    new TupleTag<>("output"), FieldAccessDescriptor.withFieldNames("foo"))));
   }
 
   private static org.apache.arrow.vector.types.pojo.Field field(

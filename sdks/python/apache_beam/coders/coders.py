@@ -37,6 +37,7 @@ encoded.
 # pytype: skip-file
 
 import base64
+import decimal
 import pickle
 from functools import lru_cache
 from typing import TYPE_CHECKING
@@ -102,6 +103,7 @@ __all__ = [
     'ProtoCoder',
     'ProtoPlusCoder',
     'ShardedKeyCoder',
+    'SinglePrecisionFloatCoder',
     'SingletonCoder',
     'StrUtf8Coder',
     'TimestampCoder',
@@ -109,7 +111,9 @@ __all__ = [
     'TupleSequenceCoder',
     'VarIntCoder',
     'WindowedValueCoder',
-    'ParamWindowedValueCoder'
+    'ParamWindowedValueCoder',
+    'BigIntegerCoder',
+    'DecimalCoder'
 ]
 
 T = TypeVar('T')
@@ -238,7 +242,9 @@ class Coder(object):
     return self.__dict__
 
   def to_type_hint(self):
-    raise NotImplementedError('BEAM-2717: %s' % self.__class__.__name__)
+    raise NotImplementedError(
+        'https://github.com/apache/beam/issues/18490: %s' %
+        self.__class__.__name__)
 
   @classmethod
   def from_type_hint(cls, unused_typehint, unused_registry):
@@ -549,6 +555,11 @@ class MapCoder(FastCoder):
     # Map ordering is non-deterministic
     return False
 
+  def as_deterministic_coder(self, step_label, error_message=None):
+    return DeterministicMapCoder(
+        self._key_coder.as_deterministic_coder(step_label, error_message),
+        self._value_coder.as_deterministic_coder(step_label, error_message))
+
   def __eq__(self, other):
     return (
         type(self) == type(other) and self._key_coder == other._key_coder and
@@ -559,6 +570,36 @@ class MapCoder(FastCoder):
 
   def __repr__(self):
     return 'MapCoder[%s, %s]' % (self._key_coder, self._value_coder)
+
+
+# This is a separate class from MapCoder as the former is a standard coder with
+# no way to carry the is_deterministic bit.
+class DeterministicMapCoder(FastCoder):
+  def __init__(self, key_coder, value_coder):
+    # type: (Coder, Coder) -> None
+    assert key_coder.is_deterministic()
+    assert value_coder.is_deterministic()
+    self._key_coder = key_coder
+    self._value_coder = value_coder
+
+  def _create_impl(self):
+    return coder_impl.MapCoderImpl(
+        self._key_coder.get_impl(), self._value_coder.get_impl(), True)
+
+  def is_deterministic(self):
+    return True
+
+  def __eq__(self, other):
+    return (
+        type(self) == type(other) and self._key_coder == other._key_coder and
+        self._value_coder == other._value_coder)
+
+  def __hash__(self):
+    return hash(type(self)) + hash(self._key_coder) + hash(self._value_coder)
+
+  def __repr__(self):
+    return 'DeterministicMapCoder[%s, %s]' % (
+        self._key_coder, self._value_coder)
 
 
 class NullableCoder(FastCoder):
@@ -572,9 +613,33 @@ class NullableCoder(FastCoder):
   def to_type_hint(self):
     return typehints.Optional[self._value_coder.to_type_hint()]
 
+  def _get_component_coders(self):
+    # type: () -> List[Coder]
+    return [self._value_coder]
+
+  @classmethod
+  def from_type_hint(cls, typehint, registry):
+    if typehints.is_nullable(typehint):
+      return cls(
+          registry.get_coder(
+              typehints.get_concrete_type_from_nullable(typehint)))
+    else:
+      raise TypeError(
+          'Typehint is not of nullable type, '
+          'and cannot be converted to a NullableCoder',
+          typehint)
+
   def is_deterministic(self):
     # type: () -> bool
     return self._value_coder.is_deterministic()
+
+  def as_deterministic_coder(self, step_label, error_message=None):
+    if self.is_deterministic():
+      return self
+    else:
+      deterministic_value_coder = self._value_coder.as_deterministic_coder(
+          step_label, error_message)
+      return NullableCoder(deterministic_value_coder)
 
   def __eq__(self, other):
     return (
@@ -582,6 +647,12 @@ class NullableCoder(FastCoder):
 
   def __hash__(self):
     return hash(type(self)) + hash(self._value_coder)
+
+  def __repr__(self):
+    return 'NullableCoder[%s]' % self._value_coder
+
+
+Coder.register_structured_urn(common_urns.coders.NULLABLE.urn, NullableCoder)
 
 
 class VarIntCoder(FastCoder):
@@ -611,8 +682,33 @@ class VarIntCoder(FastCoder):
 Coder.register_structured_urn(common_urns.coders.VARINT.urn, VarIntCoder)
 
 
+class SinglePrecisionFloatCoder(FastCoder):
+  """A coder used for single-precision floating-point values."""
+  def _create_impl(self):
+    return coder_impl.SinglePrecisionFloatCoderImpl()
+
+  def is_deterministic(self):
+    # type: () -> bool
+    return True
+
+  def to_type_hint(self):
+    return float
+
+  def __eq__(self, other):
+    return type(self) == type(other)
+
+  def __hash__(self):
+    return hash(type(self))
+
+
 class FloatCoder(FastCoder):
-  """A coder used for floating-point values."""
+  """A coder used for **double-precision** floating-point values.
+
+  Note that the name "FloatCoder" is in reference to Python's ``float`` built-in
+  which is generally implemented using C doubles. See
+  :class:`SinglePrecisionFloatCoder` for a single-precision version of this
+  coder.
+  """
   def _create_impl(self):
     return coder_impl.FloatCoderImpl()
 
@@ -1064,7 +1160,8 @@ class AvroGenericCoder(FastCoder):
     return coder_impl.AvroCoderImpl(self.schema)
 
   def is_deterministic(self):
-    # TODO(BEAM-7903): need to confirm if it's deterministic
+    # TODO(https://github.com/apache/beam/issues/19628): need to confirm if
+    # it's deterministic
     return False
 
   def __eq__(self, other):
@@ -1489,7 +1586,6 @@ Coder.register_structured_urn(
 
 
 class StateBackedIterableCoder(FastCoder):
-
   DEFAULT_WRITE_THRESHOLD = 1
 
   def __init__(
@@ -1644,3 +1740,39 @@ class TimestampPrefixingWindowCoder(FastCoder):
 
 Coder.register_structured_urn(
     common_urns.coders.CUSTOM_WINDOW.urn, TimestampPrefixingWindowCoder)
+
+
+class BigIntegerCoder(FastCoder):
+  def _create_impl(self):
+    return coder_impl.BigIntegerCoderImpl()
+
+  def is_deterministic(self):
+    # type: () -> bool
+    return True
+
+  def to_type_hint(self):
+    return int
+
+  def __eq__(self, other):
+    return type(self) == type(other)
+
+  def __hash__(self):
+    return hash(type(self))
+
+
+class DecimalCoder(FastCoder):
+  def _create_impl(self):
+    return coder_impl.DecimalCoderImpl()
+
+  def is_deterministic(self):
+    # type: () -> bool
+    return True
+
+  def to_type_hint(self):
+    return decimal.Decimal
+
+  def __eq__(self, other):
+    return type(self) == type(other)
+
+  def __hash__(self):
+    return hash(type(self))

@@ -17,12 +17,12 @@
  */
 
 import 'package:flutter/material.dart';
-import 'package:playground/config/theme.dart';
 import 'package:playground/constants/sizes.dart';
-import 'package:playground/modules/output/components/output.dart';
+import 'package:playground/modules/output/components/output_header/output_placements.dart';
 import 'package:playground/modules/output/models/output_placement.dart';
-import 'package:playground/pages/playground/components/editor_textarea_wrapper.dart';
 import 'package:playground/modules/output/models/output_placement_state.dart';
+import 'package:playground/pages/playground/components/editor_textarea_wrapper.dart';
+import 'package:playground_components/playground_components.dart';
 import 'package:provider/provider.dart';
 
 class PlaygroundPageBody extends StatelessWidget {
@@ -30,41 +30,48 @@ class PlaygroundPageBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<OutputPlacementState>(builder: (context, state, child) {
-      switch (state.placement) {
+    return Consumer2<OutputPlacementState, PlaygroundController>(
+        builder: (context, outputState, playgroundState, child) {
+      final output = OutputWidget(
+        graphDirection: outputState.placement.graphDirection,
+        playgroundController: playgroundState,
+        trailing: const OutputPlacements(),
+      );
+
+      switch (outputState.placement) {
         case OutputPlacement.bottom:
-          return Column(children: [
-            codeTextArea,
-            getHorizontalSeparator(context),
-            output,
-          ]);
+          return SplitView(
+            direction: Axis.vertical,
+            first: codeTextArea,
+            second: output,
+          );
+
         case OutputPlacement.left:
-          return Row(children: [
-            output,
-            getVerticalSeparator(context),
-            codeTextArea,
-          ]);
+          return SplitView(
+            direction: Axis.horizontal,
+            first: output,
+            second: codeTextArea,
+          );
+
         case OutputPlacement.right:
-          return Row(children: [
-            codeTextArea,
-            getVerticalSeparator(context),
-            output,
-          ]);
+          return SplitView(
+            direction: Axis.horizontal,
+            first: codeTextArea,
+            second: output,
+          );
       }
     });
   }
 
-  Widget get codeTextArea => const Expanded(child: CodeTextAreaWrapper());
-
-  Widget get output => const Expanded(child: Output());
+  Widget get codeTextArea => const CodeTextAreaWrapper();
 
   Widget getVerticalSeparator(BuildContext context) => Container(
         width: kMdSpacing,
-        color: ThemeColors.of(context).greyColor,
+        color: Theme.of(context).dividerColor,
       );
 
   Widget getHorizontalSeparator(BuildContext context) => Container(
         height: kMdSpacing,
-        color: ThemeColors.of(context).greyColor,
+        color: Theme.of(context).dividerColor,
       );
 }

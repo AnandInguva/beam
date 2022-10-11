@@ -17,3 +17,15 @@
  */
 
 const kExampleParam = 'example';
+const kExamplesParam = 'examples';
+const kIsEditableParam = 'editable';
+const kSdkParam = 'sdk';
+const kContextLine = 'line';
+
+const kQuickStartCategoryName = 'quick start';
+
+const _kIsEmbedded = 'embedded';
+
+bool isEmbedded() {
+  return Uri.base.toString().contains(_kIsEmbedded);
+}

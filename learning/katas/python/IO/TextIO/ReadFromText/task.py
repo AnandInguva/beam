@@ -14,6 +14,20 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+# beam-playground:
+#   name: ReadFromText
+#   description: Task from katas to read from text files.
+#   multifile: true
+#   context_line: 29
+#   categories:
+#     - IO
+#   complexity: BASIC
+#   tags:
+#     - io
+#     - map
+#     - strings
+
+
 import apache_beam as beam
 
 from log_elements import LogElements
@@ -22,7 +36,5 @@ with beam.Pipeline() as p:
 
   file_path = 'countries.txt'
 
-  (p | beam.io.ReadFromText(file_path)
-     | beam.Map(lambda country: country.upper())
+  (p | beam.io.ReadFromText(file_path) | beam.Map(lambda country: country.upper())
      | LogElements())
-

@@ -48,13 +48,13 @@ from apache_beam.transforms.window import TimestampedValue
 from apache_beam.utils.timestamp import Timestamp
 
 try:
-  from google.cloud import bigquery  # type: ignore[attr-defined]
+  from google.cloud import bigquery
   from google.cloud.bigquery.schema import SchemaField
   from google.cloud.exceptions import NotFound
 except ImportError:
-  bigquery = None
-  SchemaField = None
-  NotFound = None
+  bigquery = None  # type: ignore
+  SchemaField = None  # type: ignore
+  NotFound = None  # type: ignore
 
 RUNTIME_METRIC = 'runtime'
 COUNTER_LABEL = 'total_bytes_count'
@@ -92,7 +92,12 @@ def parse_step(step_name):
   Returns:
     lower case step name without namespace and step label
   """
-  return step_name.lower().replace(' ', '_').strip('step:_')
+  prefix = 'step'
+  step_name = step_name.lower().replace(' ', '_')
+  step_name = (
+      step_name[len(prefix):]
+      if prefix and step_name.startswith(prefix) else step_name)
+  return step_name.strip(':_')
 
 
 def split_metrics_by_namespace_and_name(metrics, namespace, name):
@@ -146,7 +151,7 @@ def get_all_distributions_by_type(dist, metric_id):
     list of :class:`DistributionMetric` objects
   """
   submit_timestamp = time.time()
-  dist_types = ['count', 'max', 'min', 'sum']
+  dist_types = ['count', 'max', 'min', 'sum', 'mean']
   distribution_dicts = []
   for dist_type in dist_types:
     try:
@@ -216,7 +221,7 @@ class MetricsReader(object):
           'InfluxDB')
     self.filters = filters
 
-  def publish_metrics(self, result, extra_metrics: dict):
+  def publish_metrics(self, result, extra_metrics: Optional[dict] = None):
     metric_id = uuid.uuid4().hex
     metrics = result.metrics().query(self.filters)
 
@@ -227,13 +232,16 @@ class MetricsReader(object):
     # a list of dictionaries matching the schema.
     insert_dicts = self._prepare_all_metrics(metrics, metric_id)
 
-    insert_dicts += self._prepare_extra_metrics(extra_metrics, metric_id)
+    insert_dicts += self._prepare_extra_metrics(metric_id, extra_metrics)
     if len(insert_dicts) > 0:
       for publisher in self.publishers:
         publisher.publish(insert_dicts)
 
-  def _prepare_extra_metrics(self, extra_metrics: dict, metric_id: str):
+  def _prepare_extra_metrics(
+      self, metric_id: str, extra_metrics: Optional[dict] = None):
     ts = time.time()
+    if not extra_metrics:
+      extra_metrics = {}
     return [
         Metric(ts, metric_id, v, label=k).as_dict() for k,
         v in extra_metrics.items()

@@ -57,13 +57,14 @@ import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.MoreObjects;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Strings;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
 /** A helper class for talking to Pubsub via grpc. */
 @SuppressWarnings({
-  "nullness" // TODO(https://issues.apache.org/jira/browse/BEAM-10402)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
 })
 public class PubsubGrpcClient extends PubsubClient {
   private static final int LIST_BATCH_SIZE = 1000;
@@ -84,11 +85,22 @@ public class PubsubGrpcClient extends PubsubClient {
     public PubsubClient newClient(
         @Nullable String timestampAttribute, @Nullable String idAttribute, PubsubOptions options)
         throws IOException {
+
+      return newClient(timestampAttribute, idAttribute, options, null);
+    }
+
+    @Override
+    public PubsubClient newClient(
+        @Nullable String timestampAttribute,
+        @Nullable String idAttribute,
+        PubsubOptions options,
+        String rootUrlOverride)
+        throws IOException {
       return new PubsubGrpcClient(
           timestampAttribute,
           idAttribute,
           DEFAULT_TIMEOUT_S,
-          channelForRootUrl(options.getPubsubRootUrl()),
+          channelForRootUrl(MoreObjects.firstNonNull(rootUrlOverride, options.getPubsubRootUrl())),
           options.getGcpCredential());
     }
 
@@ -190,7 +202,8 @@ public class PubsubGrpcClient extends PubsubClient {
   public int publish(TopicPath topic, List<OutgoingMessage> outgoingMessages) throws IOException {
     PublishRequest.Builder request = PublishRequest.newBuilder().setTopic(topic.getPath());
     for (OutgoingMessage outgoingMessage : outgoingMessages) {
-      PubsubMessage.Builder message = outgoingMessage.message().toBuilder();
+      PubsubMessage.Builder message =
+          outgoingMessage.message().toBuilder().clearMessageId().clearPublishTime();
 
       if (timestampAttribute != null) {
         message.putAttributes(

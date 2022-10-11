@@ -21,12 +21,14 @@ import (
 	"io"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/mtime"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/window"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/internal/errors"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestDataSource_PerElement(t *testing.T) {
@@ -158,63 +160,74 @@ func TestDataSource_Iterators(t *testing.T) {
 		},
 		// TODO: Test progress.
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			out := &IteratorCaptureNode{CaptureNode: CaptureNode{UID: 1}}
-			source := &DataSource{
-				UID:   2,
-				SID:   StreamID{PtransformID: "myPTransform"},
-				Name:  test.name,
-				Coder: test.Coder,
-				Out:   out,
-			}
-			dmr, dmw := io.Pipe()
-
-			// Simulate individual state channels with pipes and a channel.
-			sRc := make(chan io.ReadCloser)
-			swFn := func() io.WriteCloser {
-				sr, sw := io.Pipe()
-				sRc <- sr
-				return sw
-			}
-			go test.driver(source.Coder, dmw, swFn, test.keys, test.vals)
-
-			constructAndExecutePlanWithContext(t, []Unit{out, source}, DataContext{
-				Data:  &TestDataManager{R: dmr},
-				State: &TestStateReader{Rc: sRc},
-			})
-			if len(out.CapturedInputs) == 0 {
-				t.Fatal("did not capture source output")
-			}
-
-			expectedKeys := makeValues(test.keys...)
-			expectedValues := makeValuesNoWindowOrTime(test.vals...)
-			if got, want := len(out.CapturedInputs), len(expectedKeys); got != want {
-				t.Fatalf("lengths don't match: got %v, want %v", got, want)
-			}
-			var iVals []FullValue
-			for _, i := range out.CapturedInputs {
-				iVals = append(iVals, i.Key)
-
-				if got, want := i.Values, expectedValues; !equalList(got, want) {
-					t.Errorf("DataSource => key(%v) = %#v, want %#v", i.Key, extractValues(got...), extractValues(want...))
+	for _, singleIterate := range []bool{true, false} {
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				capture := &IteratorCaptureNode{CaptureNode: CaptureNode{UID: 1}}
+				out := Node(capture)
+				units := []Unit{out}
+				uid := 2
+				if singleIterate {
+					out = &Multiplex{UID: UnitID(uid), Out: []Node{capture}}
+					units = append(units, out)
+					uid++
 				}
-			}
+				source := &DataSource{
+					UID:   UnitID(uid),
+					SID:   StreamID{PtransformID: "myPTransform"},
+					Name:  test.name,
+					Coder: test.Coder,
+					Out:   out,
+				}
+				units = append(units, source)
+				dmr, dmw := io.Pipe()
 
-			if got, want := iVals, expectedKeys; !equalList(got, want) {
-				t.Errorf("DataSource => %#v, want %#v", extractValues(got...), extractValues(want...))
-			}
+				// Simulate individual state channels with pipes and a channel.
+				sRc := make(chan io.ReadCloser)
+				swFn := func() io.WriteCloser {
+					sr, sw := io.Pipe()
+					sRc <- sr
+					return sw
+				}
+				go test.driver(source.Coder, dmw, swFn, test.keys, test.vals)
 
-			// We're using integers that encode to 1 byte, so do some quick math to validate.
-			sizeOfSmallInt := 1
-			snap := quickTestSnapshot(source, int64(len(test.keys)))
-			snap.pcol.SizeSum = int64(len(test.keys) * (1 + len(test.vals)) * sizeOfSmallInt)
-			snap.pcol.SizeMin = int64((1 + len(test.vals)) * sizeOfSmallInt)
-			snap.pcol.SizeMax = int64((1 + len(test.vals)) * sizeOfSmallInt)
-			if got, want := source.Progress(), snap; got != want {
-				t.Errorf("progress didn't match: got %v, want %v", got, want)
-			}
-		})
+				constructAndExecutePlanWithContext(t, units, DataContext{
+					Data:  &TestDataManager{R: dmr},
+					State: &TestStateReader{Rc: sRc},
+				})
+				if len(capture.CapturedInputs) == 0 {
+					t.Fatal("did not capture source output")
+				}
+
+				expectedKeys := makeValues(test.keys...)
+				expectedValues := makeValuesNoWindowOrTime(test.vals...)
+				if got, want := len(capture.CapturedInputs), len(expectedKeys); got != want {
+					t.Fatalf("lengths don't match: got %v, want %v", got, want)
+				}
+				var iVals []FullValue
+				for _, i := range capture.CapturedInputs {
+					iVals = append(iVals, i.Key)
+
+					if got, want := i.Values, expectedValues; !equalList(got, want) {
+						t.Errorf("DataSource => key(%v) = %#v, want %#v", i.Key, extractValues(got...), extractValues(want...))
+					}
+				}
+
+				if got, want := iVals, expectedKeys; !equalList(got, want) {
+					t.Errorf("DataSource => %#v, want %#v", extractValues(got...), extractValues(want...))
+				}
+
+				// We're using integers that encode to 1 byte, so do some quick math to validate.
+				sizeOfSmallInt := 1
+				snap := quickTestSnapshot(source, int64(len(test.keys)))
+				snap.pcol.SizeSum = int64(len(test.keys) * (1 + len(test.vals)) * sizeOfSmallInt)
+				snap.pcol.SizeMin = int64((1 + len(test.vals)) * sizeOfSmallInt)
+				snap.pcol.SizeMax = int64((1 + len(test.vals)) * sizeOfSmallInt)
+				if got, want := source.Progress(), snap; got != want {
+					t.Errorf("progress didn't match: got %v, want %v", got, want)
+				}
+			})
+		}
 	}
 }
 
@@ -507,6 +520,9 @@ func TestDataSource_Split(t *testing.T) {
 							if got, want := splitRes.InId, testInputId; got != want {
 								t.Errorf("error in Split: got incorrect Input Id = %v, want %v", got, want)
 							}
+							if _, ok := splitRes.OW["output1"]; !ok {
+								t.Errorf("error in Split: no output watermark for output1")
+							}
 						}
 
 						// Check that split indices are correct, for both sub-element and channel splits.
@@ -606,6 +622,12 @@ func (n *TestSplittableUnit) Split(f float64) ([]*FullValue, []*FullValue, error
 	return []*FullValue{{Elm: n.elm}}, []*FullValue{{Elm: n.elm}}, nil
 }
 
+// Checkpoint routes through the Split() function to satisfy the interface.
+func (n *TestSplittableUnit) Checkpoint() ([]*FullValue, error) {
+	_, r, err := n.Split(0.0)
+	return r, err
+}
+
 // GetProgress always returns 0, to keep tests consistent.
 func (n *TestSplittableUnit) GetProgress() float64 {
 	return 0
@@ -619,6 +641,14 @@ func (n *TestSplittableUnit) GetTransformId() string {
 // GetInputId returns a constant input ID that can be tested for.
 func (n *TestSplittableUnit) GetInputId() string {
 	return testInputId
+}
+
+// GetOutputWatermark gets the current output watermark of the splittable unit
+// if one is defined, or returns nil otherwise
+func (n *TestSplittableUnit) GetOutputWatermark() map[string]*timestamppb.Timestamp {
+	ow := make(map[string]*timestamppb.Timestamp)
+	ow["output1"] = timestamppb.New(time.Date(2022, time.January, 1, 1, 0, 0, 0, time.UTC))
+	return ow
 }
 
 func floatEquals(a, b, epsilon float64) bool {

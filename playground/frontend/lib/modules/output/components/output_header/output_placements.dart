@@ -17,13 +17,12 @@
  */
 
 import 'package:flutter/material.dart';
+import 'package:flutter_gen/gen_l10n/app_localizations.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:playground/constants/sizes.dart';
 import 'package:playground/modules/output/models/output_placement.dart';
 import 'package:playground/modules/output/models/output_placement_state.dart';
 import 'package:provider/provider.dart';
-
-const kOutputPlacementSemantic = 'Change Output Area Placement';
 
 class OutputPlacements extends StatelessWidget {
   const OutputPlacements({Key? key}) : super(key: key);
@@ -32,25 +31,30 @@ class OutputPlacements extends StatelessWidget {
   Widget build(BuildContext context) {
     return Consumer<OutputPlacementState>(
       builder: (context, state, child) {
-        return Wrap(
-          spacing: kMdSpacing,
-          children: OutputPlacement.values
-              .map(
-                (placement) => Semantics(
-                  label: '$kOutputPlacementSemantic ${placement.name}',
-                  child: IconButton(
-                    splashRadius: kIconButtonSplashRadius,
-                    icon: SvgPicture.asset(
-                      placement.icon,
-                      color: state.placement == placement
-                          ? Theme.of(context).primaryColor
-                          : null,
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: kXlSpacing),
+          child: Wrap(
+            spacing: kMdSpacing,
+            children: OutputPlacement.values
+                .map(
+                  (placement) => Semantics(
+                    label:
+                        '${AppLocalizations.of(context)!.outputPlacementSemantic}'
+                        ' ${placement.name(context)}',
+                    child: IconButton(
+                      splashRadius: kIconButtonSplashRadius,
+                      icon: SvgPicture.asset(
+                        placement.icon,
+                        color: state.placement == placement
+                            ? Theme.of(context).primaryColor
+                            : null,
+                      ),
+                      onPressed: () => state.setPlacement(placement),
                     ),
-                    onPressed: () => state.setPlacement(placement),
                   ),
-                ),
-              )
-              .toList(),
+                )
+                .toList(),
+          ),
         );
       },
     );

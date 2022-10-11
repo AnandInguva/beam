@@ -17,24 +17,27 @@
  */
 
 import 'package:flutter/material.dart';
-import 'package:playground/config/theme.dart';
+import 'package:flutter_gen/gen_l10n/app_localizations.dart';
+import 'package:playground/constants/links.dart';
 import 'package:playground/constants/sizes.dart';
 import 'package:playground/modules/examples/components/examples_components.dart';
-import 'package:playground/modules/examples/models/selector_size_model.dart';
+import 'package:playground/modules/examples/components/outside_click_handler.dart';
+import 'package:playground/modules/examples/models/popover_state.dart';
 import 'package:playground/pages/playground/states/example_selector_state.dart';
-import 'package:playground/pages/playground/states/examples_state.dart';
-import 'package:playground/pages/playground/states/playground_state.dart';
+import 'package:playground/utils/dropdown_utils.dart';
+import 'package:playground_components/playground_components.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 const int kAnimationDurationInMilliseconds = 80;
 const Offset kAnimationBeginOffset = Offset(0.0, -0.02);
 const Offset kAnimationEndOffset = Offset(0.0, 0.0);
 const double kAdditionalDyAlignment = 50.0;
-const double kLgContainerHeight = 444.0;
+const double kLgContainerHeight = 490.0;
 const double kLgContainerWidth = 400.0;
 
 class ExampleSelector extends StatefulWidget {
-  final Function changeSelectorVisibility;
+  final void Function() changeSelectorVisibility;
   final bool isSelectorOpened;
 
   const ExampleSelector({
@@ -83,10 +86,10 @@ class _ExampleSelectorState extends State<ExampleSelector>
     return Container(
       height: kContainerHeight,
       decoration: BoxDecoration(
-        color: ThemeColors.of(context).greyColor,
+        color: Theme.of(context).dividerColor,
         borderRadius: BorderRadius.circular(kSmBorderRadius),
       ),
-      child: Consumer<PlaygroundState>(
+      child: Consumer<PlaygroundController>(
         builder: (context, state, child) => TextButton(
           key: selectorKey,
           onPressed: () {
@@ -104,7 +107,7 @@ class _ExampleSelectorState extends State<ExampleSelector>
             alignment: WrapAlignment.center,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              Consumer<PlaygroundState>(
+              Consumer<PlaygroundController>(
                 builder: (context, state, child) => Text(state.examplesTitle),
               ),
               const Icon(Icons.keyboard_arrow_down),
@@ -116,71 +119,108 @@ class _ExampleSelectorState extends State<ExampleSelector>
   }
 
   OverlayEntry createExamplesDropdown() {
-    SelectorPositionModel posModel = findSelectorPositionData();
+    Offset dropdownOffset = findDropdownOffset(key: selectorKey);
 
     return OverlayEntry(
       builder: (context) {
-        return Consumer2<ExampleState, PlaygroundState>(
-          builder: (context, exampleState, playgroundState, child) => Stack(
-            children: [
-              GestureDetector(
-                onTap: () {
-                  animationController.reverse();
-                  examplesDropdown?.remove();
-                  exampleState.changeSelectorVisibility();
-                },
-                child: Container(
-                  color: Colors.transparent,
-                  height: double.infinity,
-                  width: double.infinity,
-                ),
-              ),
-              ChangeNotifierProvider(
-                create: (context) => ExampleSelectorState(
-                  exampleState,
-                  playgroundState,
-                  exampleState.getCategories(playgroundState.sdk)!,
-                ),
-                builder: (context, _) => Positioned(
-                  left: posModel.xAlignment,
-                  top: posModel.yAlignment + kAdditionalDyAlignment,
-                  child: SlideTransition(
-                    position: offsetAnimation,
-                    child: Material(
-                      elevation: kElevation.toDouble(),
-                      child: Container(
-                        height: kLgContainerHeight,
-                        width: kLgContainerWidth,
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).backgroundColor,
-                          borderRadius: BorderRadius.circular(kMdBorderRadius),
-                        ),
-                        child: Column(
-                          children: [
-                            SearchField(controller: textController),
-                            const TypeFilter(),
-                            ExampleList(controller: scrollController),
-                          ],
+        return ChangeNotifierProvider<PopoverState>(
+          create: (context) => PopoverState(false),
+          builder: (context, state) {
+            return Consumer<PlaygroundController>(
+              builder: (context, playgroundController, child) => Stack(
+                children: [
+                  OutsideClickHandler(
+                    onTap: () {
+                      _closeDropdown(playgroundController.exampleCache);
+                      // handle description dialogs
+                      Navigator.of(context, rootNavigator: true)
+                          .popUntil((route) {
+                        return route.isFirst;
+                      });
+                    },
+                  ),
+                  ChangeNotifierProvider(
+                    create: (context) => ExampleSelectorState(
+                      playgroundController,
+                      playgroundController.exampleCache
+                          .getCategories(playgroundController.sdk),
+                    ),
+                    builder: (context, _) => Positioned(
+                      left: dropdownOffset.dx,
+                      top: dropdownOffset.dy,
+                      child: SlideTransition(
+                        position: offsetAnimation,
+                        child: Material(
+                          elevation: kElevation,
+                          child: Container(
+                            height: kLgContainerHeight,
+                            width: kLgContainerWidth,
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).backgroundColor,
+                              borderRadius:
+                                  BorderRadius.circular(kMdBorderRadius),
+                            ),
+                            child: _buildDropdownContent(
+                              context,
+                              playgroundController,
+                            ),
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
+                ],
               ),
-            ],
-          ),
+            );
+          },
         );
       },
     );
   }
 
-  SelectorPositionModel findSelectorPositionData() {
-    RenderBox? rBox =
-        selectorKey.currentContext?.findRenderObject() as RenderBox;
-    SelectorPositionModel positionModel = SelectorPositionModel(
-      xAlignment: rBox.localToGlobal(Offset.zero).dx,
-      yAlignment: rBox.localToGlobal(Offset.zero).dy,
+  Widget _buildDropdownContent(
+    BuildContext context,
+    PlaygroundController playgroundController,
+  ) {
+    if (playgroundController.exampleCache.categoryListsBySdk.isEmpty ||
+        playgroundController.selectedExample == null) {
+      return const LoadingIndicator();
+    }
+
+    return Column(
+      children: [
+        SearchField(controller: textController),
+        const TypeFilter(),
+        ExampleList(
+          controller: scrollController,
+          selectedExample: playgroundController.selectedExample!,
+          animationController: animationController,
+          dropdown: examplesDropdown,
+        ),
+        const BeamDivider(),
+        SizedBox(
+          width: double.infinity,
+          child: TextButton(
+            child: Padding(
+              padding: const EdgeInsets.all(kXlSpacing),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  AppLocalizations.of(context)!.addExample,
+                  style: TextStyle(color: Theme.of(context).primaryColor),
+                ),
+              ),
+            ),
+            onPressed: () => launchUrl(Uri.parse(kAddExampleLink)),
+          ),
+        ),
+      ],
     );
-    return positionModel;
+  }
+
+  void _closeDropdown(ExampleCache exampleCache) {
+    animationController.reverse();
+    examplesDropdown?.remove();
+    exampleCache.changeSelectorVisibility();
   }
 }

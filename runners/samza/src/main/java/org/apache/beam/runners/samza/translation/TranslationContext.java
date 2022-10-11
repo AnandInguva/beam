@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import org.apache.beam.runners.core.construction.TransformInputs;
 import org.apache.beam.runners.samza.SamzaPipelineOptions;
@@ -70,10 +71,10 @@ import org.slf4j.LoggerFactory;
  * PTransform}.
  */
 @SuppressWarnings({
-  "rawtypes", // TODO(https://issues.apache.org/jira/browse/BEAM-10556)
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
   "keyfor",
   "nullness"
-}) // TODO(https://issues.apache.org/jira/browse/BEAM-10402)
+}) // TODO(https://github.com/apache/beam/issues/20497)
 public class TranslationContext {
   private static final Logger LOG = LoggerFactory.getLogger(TranslationContext.class);
   private final StreamApplicationDescriptor appDescriptor;
@@ -109,6 +110,13 @@ public class TranslationContext {
    */
   public <OutT> void registerInputMessageStreams(
       PValue pvalue, List<? extends InputDescriptor<KV<?, OpMessage<OutT>>, ?>> inputDescriptors) {
+    registerInputMessageStreams(pvalue, inputDescriptors, this::registerMessageStream);
+  }
+
+  protected <KeyT, OutT> void registerInputMessageStreams(
+      KeyT key,
+      List<? extends InputDescriptor<KV<?, OpMessage<OutT>>, ?>> inputDescriptors,
+      BiConsumer<KeyT, MessageStream<OpMessage<OutT>>> registerFunction) {
     final Set<MessageStream<OpMessage<OutT>>> streamsToMerge = new HashSet<>();
     for (InputDescriptor<KV<?, OpMessage<OutT>>, ?> inputDescriptor : inputDescriptors) {
       final String streamId = inputDescriptor.getStreamId();
@@ -119,7 +127,7 @@ public class TranslationContext {
         LOG.info(
             String.format(
                 "Stream id %s has already been mapped to %s stream. Mapping %s to the same message stream.",
-                streamId, messageStream, pvalue));
+                streamId, messageStream, key));
         streamsToMerge.add(messageStream);
       } else {
         final MessageStream<OpMessage<OutT>> typedStream =
@@ -128,7 +136,8 @@ public class TranslationContext {
         streamsToMerge.add(typedStream);
       }
     }
-    registerMessageStream(pvalue, MessageStream.mergeAll(streamsToMerge));
+
+    registerFunction.accept(key, MessageStream.mergeAll(streamsToMerge));
   }
 
   public <OutT> void registerMessageStream(PValue pvalue, MessageStream<OpMessage<OutT>> stream) {
@@ -237,7 +246,7 @@ public class TranslationContext {
   }
 
   public String getTransformId() {
-    return idGenerator.getId(currentTransform.getFullName());
+    return idGenerator.getId(getTransformFullName());
   }
 
   /** The dummy stream created will only be used in Beam tests. */

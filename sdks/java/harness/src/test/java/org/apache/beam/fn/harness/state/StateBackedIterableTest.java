@@ -31,9 +31,12 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Random;
+import org.apache.beam.fn.harness.Cache;
+import org.apache.beam.fn.harness.Caches;
 import org.apache.beam.model.fnexecution.v1.BeamFnApi.StateKey;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
-import org.apache.beam.vendor.grpc.v1p36p0.com.google.protobuf.ByteString;
+import org.apache.beam.sdk.util.ByteStringOutputStream;
+import org.apache.beam.vendor.grpc.v1p48p1.com.google.protobuf.ByteString;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.FluentIterable;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableMap;
@@ -47,7 +50,7 @@ import org.junit.runners.Parameterized;
 /** Tests for {@link StateBackedIterable}. */
 @RunWith(Enclosed.class)
 @SuppressWarnings({
-  "rawtypes", // TODO(https://issues.apache.org/jira/browse/BEAM-10556)
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
 })
 public class StateBackedIterableTest {
 
@@ -93,15 +96,85 @@ public class StateBackedIterableTest {
 
       StateBackedIterable<String> iterable =
           new StateBackedIterable<>(
+              Caches.noop(),
               fakeBeamFnStateClient,
               "instruction",
-              encode(suffixKey),
+              key(suffixKey),
               StringUtf8Coder.of(),
               prefix);
 
       assertEquals(expected, Lists.newArrayList(iterable));
       assertEquals(expected, Lists.newArrayList(iterable));
       assertEquals(expected, Lists.newArrayList(iterable));
+    }
+
+    @Test
+    public void testReiterationCached() throws Exception {
+      FakeBeamFnStateClient fakeBeamFnStateClient =
+          new FakeBeamFnStateClient(
+              StringUtf8Coder.of(),
+              ImmutableMap.of(
+                  key("nonEmptySuffix"), asList("C", "D", "E", "F", "G", "H", "I", "J", "K"),
+                  key("emptySuffix"), asList()));
+
+      StateBackedIterable<String> iterable =
+          new StateBackedIterable<>(
+              Caches.eternal(),
+              fakeBeamFnStateClient,
+              "instruction",
+              key(suffixKey),
+              StringUtf8Coder.of(),
+              prefix);
+
+      // Ensure that the load is lazy
+      assertEquals(0, fakeBeamFnStateClient.getCallCount());
+      assertEquals(expected, Lists.newArrayList(iterable));
+      // We expect future reiterations to not perform any loads
+      int callCount = fakeBeamFnStateClient.getCallCount();
+      assertEquals(expected, Lists.newArrayList(iterable));
+      assertEquals(expected, Lists.newArrayList(iterable));
+      assertEquals(callCount, fakeBeamFnStateClient.getCallCount());
+    }
+
+    @Test
+    public void testCacheKeyIsUnique() throws Exception {
+      // Share a cache for multiple iterables leads to distinct keys being used.
+      Cache cache = Caches.eternal();
+      FakeBeamFnStateClient fakeBeamFnStateClient =
+          new FakeBeamFnStateClient(
+              StringUtf8Coder.of(),
+              ImmutableMap.of(
+                  key("nonEmptySuffix"), asList("C", "D", "E", "F", "G", "H", "I", "J", "K"),
+                  key("emptySuffix"), asList(),
+                  key("otherIterable"), asList("Z")));
+
+      StateBackedIterable<String> otherIterable =
+          new StateBackedIterable<>(
+              cache,
+              fakeBeamFnStateClient,
+              "instruction",
+              key("otherIterable"),
+              StringUtf8Coder.of(),
+              Collections.emptyList());
+      // Ensure that the load is lazy
+      assertEquals(0, fakeBeamFnStateClient.getCallCount());
+      assertEquals(asList("Z"), Lists.newArrayList(otherIterable));
+
+      StateBackedIterable<String> iterable =
+          new StateBackedIterable<>(
+              cache,
+              fakeBeamFnStateClient,
+              "instruction",
+              key(suffixKey),
+              StringUtf8Coder.of(),
+              prefix);
+
+      assertEquals(expected, Lists.newArrayList(iterable));
+      // We expect future reiterations to not perform any loads
+      int callCount = fakeBeamFnStateClient.getCallCount();
+      assertEquals(expected, Lists.newArrayList(iterable));
+      assertEquals(expected, Lists.newArrayList(iterable));
+      assertEquals(callCount, fakeBeamFnStateClient.getCallCount());
     }
 
     @Test
@@ -115,9 +188,10 @@ public class StateBackedIterableTest {
 
       StateBackedIterable<String> iterable =
           new StateBackedIterable<>(
+              Caches.noop(),
               fakeBeamFnStateClient,
               "instruction",
-              encode(suffixKey),
+              key(suffixKey),
               StringUtf8Coder.of(),
               prefix);
 
@@ -147,7 +221,8 @@ public class StateBackedIterableTest {
     public void testDecodeEncodeRegularIterable() throws Exception {
       Iterable<String> iterable = FluentIterable.of("A", "B", "C");
       StateBackedIterable.Coder<String> coder =
-          new StateBackedIterable.Coder<>(null, () -> "instructionId", StringUtf8Coder.of());
+          new StateBackedIterable.Coder<>(
+              () -> Caches.noop(), null, () -> "instructionId", StringUtf8Coder.of());
 
       // We can't rely on CoderProperties since it requires serialization of the coder
       ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -161,9 +236,15 @@ public class StateBackedIterableTest {
     public void testEncodeDecodeStateBackedIterable() throws Exception {
       StateBackedIterable<String> iterable =
           new StateBackedIterable(
-              null, "instructionId", encode("key"), StringUtf8Coder.of(), Arrays.asList("A", "B"));
+              Caches.noop(),
+              null,
+              "instructionId",
+              key("key"),
+              StringUtf8Coder.of(),
+              Arrays.asList("A", "B"));
       StateBackedIterable.Coder<String> coder =
-          new StateBackedIterable.Coder<>(null, () -> "instructionId", StringUtf8Coder.of());
+          new StateBackedIterable.Coder<>(
+              () -> Caches.noop(), null, () -> "instructionId", StringUtf8Coder.of());
 
       // We can't rely on CoderProperties since it requires serialization of the coder
       ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -188,9 +269,10 @@ public class StateBackedIterableTest {
 
       StateBackedIterable<String> iterable =
           new StateBackedIterable<>(
+              Caches.noop(),
               fakeBeamFnStateClient,
               "instruction",
-              encode("suffix"),
+              key("suffix"),
               StringUtf8Coder.of(),
               ImmutableList.of("A", "B"));
 
@@ -216,7 +298,7 @@ public class StateBackedIterableTest {
   }
 
   private static ByteString encode(String... values) throws IOException {
-    ByteString.Output out = ByteString.newOutput();
+    ByteStringOutputStream out = new ByteStringOutputStream();
     for (String value : values) {
       StringUtf8Coder.of().encode(value, out);
     }

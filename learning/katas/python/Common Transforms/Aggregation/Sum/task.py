@@ -14,6 +14,18 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+# beam-playground:
+#   name: AggregationSum
+#   description: Task from katas to compute the sum of all elements.
+#   multifile: false
+#   context_line: 29
+#   categories:
+#     - Combiners
+#   complexity: BASIC
+#   tags:
+#     - count
+#     - numbers
+
 import apache_beam as beam
 
 from log_elements import LogElements
@@ -23,4 +35,3 @@ with beam.Pipeline() as p:
   (p | beam.Create(range(1, 11))
      | beam.CombineGlobally(sum)
      | LogElements())
-

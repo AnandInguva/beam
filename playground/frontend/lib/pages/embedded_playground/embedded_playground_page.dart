@@ -17,33 +17,43 @@
  */
 
 import 'package:flutter/material.dart';
-import 'package:playground/constants/sizes.dart';
 import 'package:playground/pages/embedded_playground/components/embedded_actions.dart';
+import 'package:playground/pages/embedded_playground/components/embedded_appbar_title.dart';
 import 'package:playground/pages/embedded_playground/components/embedded_editor.dart';
+import 'package:playground/pages/embedded_playground/components/embedded_split_view.dart';
+import 'package:playground_components/playground_components.dart';
+import 'package:provider/provider.dart';
 
-const kPlaygroundText = 'Try in Playground';
 const kActionsWidth = 300.0;
 const kActionsHeight = 40.0;
 
 class EmbeddedPlaygroundPage extends StatelessWidget {
-  const EmbeddedPlaygroundPage({Key? key}) : super(key: key);
+  final bool isEditable;
+
+  const EmbeddedPlaygroundPage({
+    Key? key,
+    required this.isEditable,
+  }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Stack(
-        children: const [
-          Positioned.fill(
-            child: EmbeddedEditor(),
+    return Consumer<PlaygroundController>(
+      builder: (context, controller, child) => Scaffold(
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          title: const EmbeddedAppBarTitle(),
+          actions: const [EmbeddedActions()],
+        ),
+        body: EmbeddedSplitView(
+          first: EmbeddedEditor(isEditable: isEditable),
+          second: Container(
+            color: Theme.of(context).backgroundColor,
+            child: OutputWidget(
+              playgroundController: controller,
+              graphDirection: Axis.horizontal,
+            ),
           ),
-          Positioned(
-            right: kXlSpacing,
-            top: kXlSpacing,
-            width: kActionsWidth,
-            height: kActionsHeight,
-            child: EmbeddedActions(),
-          ),
-        ],
+        ),
       ),
     );
   }

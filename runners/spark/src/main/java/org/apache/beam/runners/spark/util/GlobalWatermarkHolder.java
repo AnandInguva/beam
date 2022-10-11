@@ -20,12 +20,12 @@ package org.apache.beam.runners.spark.util;
 import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkState;
 
 import java.io.Serializable;
-import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import javax.annotation.Nonnull;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.annotations.VisibleForTesting;
@@ -56,8 +56,8 @@ import scala.reflect.ClassTag;
  * advances the watermarks according to the queue (first-in-first-out).
  */
 @SuppressWarnings({
-  "rawtypes", // TODO(https://issues.apache.org/jira/browse/BEAM-10556)
-  "nullness" // TODO(https://issues.apache.org/jira/browse/BEAM-10402)
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
 })
 public class GlobalWatermarkHolder {
 
@@ -137,7 +137,7 @@ public class GlobalWatermarkHolder {
       createWatermarkCache(final Long batchDuration) {
     return CacheBuilder.newBuilder()
         // expire watermarks every half batch duration to ensure they update in every batch.
-        .expireAfterWrite(Duration.ofMillis(batchDuration / 2))
+        .expireAfterWrite(batchDuration / 2, TimeUnit.MILLISECONDS)
         .build(new WatermarksLoader());
   }
 
@@ -252,7 +252,7 @@ public class GlobalWatermarkHolder {
         WATERMARKS_BLOCK_ID, newWatermarks, StorageLevel.MEMORY_ONLY(), true, WATERMARKS_TAG);
     // if an executor tries to fetch the watermark block here, it still may fail to do so since
     // the put operation might not have been executed yet
-    // see also https://issues.apache.org/jira/browse/BEAM-2789
+    // see also https://github.com/apache/beam/issues/18426
     LOG.info("Put new watermark block: {}", newWatermarks);
   }
 

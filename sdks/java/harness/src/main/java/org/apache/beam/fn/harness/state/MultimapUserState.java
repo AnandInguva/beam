@@ -17,10 +17,12 @@
  */
 package org.apache.beam.fn.harness.state;
 
+import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkArgument;
 import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkState;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -28,17 +30,21 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import org.apache.beam.fn.harness.Cache;
+import org.apache.beam.fn.harness.Caches;
+import org.apache.beam.fn.harness.state.StateFetchingIterators.CachingStateIterable;
 import org.apache.beam.model.fnexecution.v1.BeamFnApi.StateAppendRequest;
 import org.apache.beam.model.fnexecution.v1.BeamFnApi.StateClearRequest;
+import org.apache.beam.model.fnexecution.v1.BeamFnApi.StateKey;
 import org.apache.beam.model.fnexecution.v1.BeamFnApi.StateRequest;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.fn.stream.PrefetchableIterable;
 import org.apache.beam.sdk.fn.stream.PrefetchableIterables;
 import org.apache.beam.sdk.fn.stream.PrefetchableIterator;
+import org.apache.beam.sdk.util.ByteStringOutputStream;
 import org.apache.beam.sdk.values.KV;
-import org.apache.beam.vendor.grpc.v1p36p0.com.google.protobuf.ByteString;
+import org.apache.beam.vendor.grpc.v1p48p1.com.google.protobuf.ByteString;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Maps;
-import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * An implementation of a multimap user state that utilizes the Beam Fn State API to fetch, clear
@@ -49,17 +55,16 @@ import org.checkerframework.checker.nullness.qual.Nullable;
  *
  * <p>TODO: Move to an async persist model where persistence is signalled based upon cache memory
  * pressure and its need to flush.
- *
- * <p>TODO: Support block level caching and prefetch.
  */
 public class MultimapUserState<K, V> {
 
+  private final Cache<?, ?> cache;
   private final BeamFnStateClient beamFnStateClient;
   private final Coder<K> mapKeyCoder;
   private final Coder<V> valueCoder;
-  private final String stateId;
   private final StateRequest keysStateRequest;
   private final StateRequest userStateRequest;
+  private final CachingStateIterable<K> persistedKeys;
 
   private boolean isClosed;
   private boolean isCleared;
@@ -67,44 +72,40 @@ public class MultimapUserState<K, V> {
   private HashMap<Object, K> pendingRemoves = Maps.newHashMap();
   private HashMap<Object, KV<K, List<V>>> pendingAdds = Maps.newHashMap();
   // Values retrieved from persistent storage
-  private HashMap<K, PrefetchableIterable<V>> persistedValues = Maps.newHashMap();
-  private @Nullable PrefetchableIterable<K> persistedKeys = null;
+  private HashMap<Object, KV<K, CachingStateIterable<V>>> persistedValues = Maps.newHashMap();
 
   public MultimapUserState(
+      Cache<?, ?> cache,
       BeamFnStateClient beamFnStateClient,
       String instructionId,
-      String pTransformId,
-      String stateId,
-      ByteString encodedWindow,
-      ByteString encodedKey,
+      StateKey stateKey,
       Coder<K> mapKeyCoder,
       Coder<V> valueCoder) {
+    checkArgument(
+        stateKey.hasMultimapKeysUserState(),
+        "Expected MultimapKeysUserState StateKey but received %s.",
+        stateKey);
+    this.cache = cache;
     this.beamFnStateClient = beamFnStateClient;
     this.mapKeyCoder = mapKeyCoder;
     this.valueCoder = valueCoder;
-    this.stateId = stateId;
 
-    StateRequest.Builder keysStateRequestBuilder = StateRequest.newBuilder();
-    keysStateRequestBuilder
-        .setInstructionId(instructionId)
-        .getStateKeyBuilder()
-        .getMultimapKeysUserStateBuilder()
-        .setTransformId(pTransformId)
-        .setUserStateId(stateId)
-        .setKey(encodedKey)
-        .setWindow(encodedWindow);
-    keysStateRequest = keysStateRequestBuilder.build();
+    this.keysStateRequest =
+        StateRequest.newBuilder().setInstructionId(instructionId).setStateKey(stateKey).build();
+    this.persistedKeys =
+        StateFetchingIterators.readAllAndDecodeStartingFrom(
+            cache, beamFnStateClient, keysStateRequest, mapKeyCoder);
 
     StateRequest.Builder userStateRequestBuilder = StateRequest.newBuilder();
     userStateRequestBuilder
         .setInstructionId(instructionId)
         .getStateKeyBuilder()
         .getMultimapUserStateBuilder()
-        .setTransformId(pTransformId)
-        .setUserStateId(stateId)
-        .setWindow(encodedWindow)
-        .setKey(encodedKey);
-    userStateRequest = userStateRequestBuilder.build();
+        .setTransformId(stateKey.getMultimapKeysUserState().getTransformId())
+        .setUserStateId(stateKey.getMultimapKeysUserState().getUserStateId())
+        .setWindow(stateKey.getMultimapKeysUserState().getWindow())
+        .setKey(stateKey.getMultimapKeysUserState().getKey());
+    this.userStateRequest = userStateRequestBuilder.build();
   }
 
   public void clear() {
@@ -115,7 +116,6 @@ public class MultimapUserState<K, V> {
 
     isCleared = true;
     persistedValues = Maps.newHashMap();
-    persistedKeys = null;
     pendingRemoves = Maps.newHashMap();
     pendingAdds = Maps.newHashMap();
   }
@@ -142,12 +142,11 @@ public class MultimapUserState<K, V> {
       return pendingValues;
     }
 
-    PrefetchableIterable<V> persistedValues = getPersistedValues(key);
-    return PrefetchableIterables.concat(persistedValues, pendingValues);
+    return PrefetchableIterables.concat(getPersistedValues(structuralKey, key), pendingValues);
   }
 
   @SuppressWarnings({
-    "nullness" // TODO(https://issues.apache.org/jira/browse/BEAM-12687)
+    "nullness" // TODO(https://github.com/apache/beam/issues/21068)
   })
   /*
    * Returns an iterables containing all distinct keys in this multimap.
@@ -165,15 +164,14 @@ public class MultimapUserState<K, V> {
       return PrefetchableIterables.concat(keys);
     }
 
-    PrefetchableIterable<K> persistedKeys = getPersistedKeys();
     Set<Object> pendingRemovesNow = new HashSet<>(pendingRemoves.keySet());
     Map<Object, K> pendingAddsNow = new HashMap<>();
     for (Map.Entry<Object, KV<K, List<V>>> entry : pendingAdds.entrySet()) {
       pendingAddsNow.put(entry.getKey(), entry.getValue().getKey());
     }
-    return new PrefetchableIterable<K>() {
+    return new PrefetchableIterables.Default<K>() {
       @Override
-      public PrefetchableIterator<K> iterator() {
+      public PrefetchableIterator<K> createIterator() {
         return new PrefetchableIterator<K>() {
           PrefetchableIterator<K> persistedKeysIterator = persistedKeys.iterator();
           Iterator<K> pendingAddsNowIterator;
@@ -268,7 +266,7 @@ public class MultimapUserState<K, V> {
 
   @SuppressWarnings({
     "FutureReturnValueIgnored",
-    "nullness" // TODO(https://issues.apache.org/jira/browse/BEAM-12687)
+    "nullness" // TODO(https://github.com/apache/beam/issues/21068)
   })
   // Update data in persistent store
   public void asyncClose() throws Exception {
@@ -277,84 +275,136 @@ public class MultimapUserState<K, V> {
         "Multimap user state is no longer usable because it is closed for %s",
         keysStateRequest.getStateKey());
     isClosed = true;
-    // Nothing to persist
+    // No mutations necessary
     if (!isCleared && pendingRemoves.isEmpty() && pendingAdds.isEmpty()) {
       return;
     }
 
+    startStateApiWrites();
+    updateCache();
+  }
+
+  @SuppressWarnings("FutureReturnValueIgnored")
+  private void startStateApiWrites() {
     // Clear currently persisted key-values
     if (isCleared) {
-      beamFnStateClient
-          .handle(keysStateRequest.toBuilder().setClear(StateClearRequest.getDefaultInstance()))
-          .get();
+      beamFnStateClient.handle(
+          keysStateRequest.toBuilder().setClear(StateClearRequest.getDefaultInstance()));
     } else if (!pendingRemoves.isEmpty()) {
       for (K key : pendingRemoves.values()) {
-        beamFnStateClient
-            .handle(
-                createUserStateRequest(key)
-                    .toBuilder()
-                    .setClear(StateClearRequest.getDefaultInstance()))
-            .get();
+        StateRequest request = createUserStateRequest(key);
+        beamFnStateClient.handle(
+            request.toBuilder().setClear(StateClearRequest.getDefaultInstance()));
       }
     }
 
     // Persist pending key-values
     if (!pendingAdds.isEmpty()) {
       for (KV<K, List<V>> entry : pendingAdds.values()) {
-        beamFnStateClient
-            .handle(
-                createUserStateRequest(entry.getKey())
-                    .toBuilder()
-                    .setAppend(
-                        StateAppendRequest.newBuilder().setData(encodeValues(entry.getValue()))))
-            .get();
+        StateRequest request = createUserStateRequest(entry.getKey());
+        beamFnStateClient.handle(
+            request
+                .toBuilder()
+                .setAppend(
+                    StateAppendRequest.newBuilder().setData(encodeValues(entry.getValue()))));
+      }
+    }
+  }
+
+  private void updateCache() {
+    List<K> pendingAddsKeys = new ArrayList<>(pendingAdds.size());
+    for (KV<K, List<V>> entry : pendingAdds.values()) {
+      pendingAddsKeys.add(entry.getKey());
+    }
+
+    if (isCleared) {
+      // This will clear all keys and values since values is a sub-cache of keys. Note this
+      // takes ownership of pendingAddKeys. This object is no longer used after it has been closed.
+      persistedKeys.clearAndAppend(pendingAddsKeys);
+
+      // Since the map was cleared we can add all the values that are pending since we know
+      // that they must have been cleared.
+      for (Map.Entry<Object, KV<K, List<V>>> entry : pendingAdds.entrySet()) {
+        CachingStateIterable<V> iterable =
+            getPersistedValues(entry.getKey(), entry.getValue().getKey());
+        // Note this takes ownership of the list but this object is no longer used after it has
+        // been closed.
+        iterable.clearAndAppend(entry.getValue().getValue());
+      }
+    } else {
+      // The cast to Set<Object> is necessary since the checker framework would like to further
+      // limit the type to Set<@KeyFor("this.pendingRemoves") Object> which is incompatible with
+      // the API being remove(Set<Object>). We don't want to limit the API for remove either.
+      persistedKeys.remove((Set<Object>) pendingRemoves.keySet());
+      persistedKeys.append(pendingAddsKeys);
+
+      // For each removed key, we want to update the internal cache to clear its set of values
+      for (Map.Entry<Object, K> entry : pendingRemoves.entrySet()) {
+        CachingStateIterable<V> iterable = getPersistedValues(entry.getKey(), entry.getValue());
+        iterable.clearAndAppend(Collections.emptyList());
+      }
+
+      // For each added key, try to update the internal cache with the set of values.
+      for (Map.Entry<Object, KV<K, List<V>>> entry : pendingAdds.entrySet()) {
+        KV<K, CachingStateIterable<V>> value = persistedValues.get(entry.getKey());
+        // We don't do anything for keys that haven't been loaded since we have no knowledge whether
+        // the key is empty or not.
+        if (value != null) {
+          value.getValue().append(entry.getValue().getValue());
+        }
       }
     }
   }
 
   private ByteString encodeValues(Iterable<V> values) {
     try {
-      ByteString.Output output = ByteString.newOutput();
+      ByteStringOutputStream output = new ByteStringOutputStream();
       for (V value : values) {
         valueCoder.encode(value, output);
       }
       return output.toByteString();
     } catch (IOException e) {
       throw new IllegalStateException(
-          String.format("Failed to encode values for multimap user state id %s.", stateId), e);
+          String.format(
+              "Failed to encode values for multimap user state id %s.",
+              keysStateRequest.getStateKey().getMultimapKeysUserState().getUserStateId()),
+          e);
     }
   }
 
   private StateRequest createUserStateRequest(K key) {
     try {
-      ByteString.Output output = ByteString.newOutput();
+      ByteStringOutputStream output = new ByteStringOutputStream();
       mapKeyCoder.encode(key, output);
       StateRequest.Builder request = userStateRequest.toBuilder();
       request.getStateKeyBuilder().getMultimapUserStateBuilder().setMapKey(output.toByteString());
       return request.build();
     } catch (IOException e) {
       throw new IllegalStateException(
-          String.format("Failed to encode key for multimap user state id %s.", stateId), e);
+          String.format(
+              "Failed to encode key for multimap user state id %s.",
+              keysStateRequest.getStateKey().getMultimapKeysUserState().getUserStateId()),
+          e);
     }
   }
 
-  private PrefetchableIterable<V> getPersistedValues(K key) {
-    if (!persistedValues.containsKey(key)) {
-      PrefetchableIterable<V> values =
-          StateFetchingIterators.readAllAndDecodeStartingFrom(
-              beamFnStateClient, createUserStateRequest(key), valueCoder);
-      persistedValues.put(key, values);
-    }
-    return persistedValues.get(key);
-  }
-
-  private PrefetchableIterable<K> getPersistedKeys() {
-    checkState(!isCleared);
-    if (persistedKeys == null) {
-      persistedKeys =
-          StateFetchingIterators.readAllAndDecodeStartingFrom(
-              beamFnStateClient, keysStateRequest, mapKeyCoder);
-    }
-    return persistedKeys;
+  private CachingStateIterable<V> getPersistedValues(Object structuralKey, K key) {
+    return persistedValues
+        .computeIfAbsent(
+            structuralKey,
+            unused -> {
+              StateRequest request = createUserStateRequest(key);
+              return KV.of(
+                  key,
+                  StateFetchingIterators.readAllAndDecodeStartingFrom(
+                      Caches.subCache(
+                          cache,
+                          "ValuesForKey",
+                          request.getStateKey().getMultimapUserState().getMapKey()),
+                      beamFnStateClient,
+                      request,
+                      valueCoder));
+            })
+        .getValue();
   }
 }

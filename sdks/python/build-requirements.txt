@@ -15,7 +15,7 @@
 #    limitations under the License.
 #
 
-# TODO(BEAM-8954): Consider PEP-517/PEP-518 instead of this file.
+# TODO(https://github.com/apache/beam/issues/20051): Consider PEP-517/PEP-518 instead of this file.
 
 setuptools
 wheel>=0.36.0
@@ -25,3 +25,6 @@ mypy-protobuf==1.18
 
 # Avoid https://github.com/pypa/virtualenv/issues/2006
 distlib==0.3.1
+
+# Numpy headers
+numpy>=1.14.3,<1.23.0

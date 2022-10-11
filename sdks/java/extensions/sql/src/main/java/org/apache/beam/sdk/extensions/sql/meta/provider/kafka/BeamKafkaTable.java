@@ -19,7 +19,6 @@ package org.apache.beam.sdk.extensions.sql.meta.provider.kafka;
 
 import static org.apache.beam.vendor.calcite.v1_28_0.com.google.common.base.Preconditions.checkArgument;
 
-import java.time.Duration;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -57,7 +56,7 @@ import org.slf4j.LoggerFactory;
  * between {@code BeamSqlRow} and {@code KV<byte[], byte[]>}.
  */
 @SuppressWarnings({
-  "nullness" // TODO(https://issues.apache.org/jira/browse/BEAM-10402)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
 })
 public abstract class BeamKafkaTable extends SchemaBaseBeamTable {
   private String bootstrapServers;
@@ -223,7 +222,7 @@ public abstract class BeamKafkaTable extends SchemaBaseBeamTable {
       throw new NoEstimationException("There is no partition with messages in it.");
     }
 
-    ConsumerRecords<T, T> records = consumer.poll(Duration.ofSeconds(1));
+    ConsumerRecords<T, T> records = consumer.poll(1000);
 
     // Kafka guarantees the delivery of messages in order they arrive to each partition.
     // Therefore the first message seen from each partition is the first message arrived to that.

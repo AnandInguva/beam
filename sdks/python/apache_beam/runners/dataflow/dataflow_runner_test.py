@@ -29,7 +29,6 @@ from parameterized import parameterized
 
 import apache_beam as beam
 import apache_beam.transforms as ptransform
-from apache_beam.coders import BytesCoder
 from apache_beam.options.pipeline_options import DebugOptions
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.pipeline import AppliedPTransform
@@ -66,7 +65,8 @@ except ImportError:
 
 
 # SpecialParDo and SpecialDoFn are used in test_remote_runner_display_data.
-# Due to BEAM-8482, these need to be declared outside of the test method.
+# Due to https://github.com/apache/beam/issues/19848, these need to be declared
+# outside of the test method.
 # TODO: Should not subclass ParDo. Switch to PTransform as soon as
 # composite transforms support display data.
 class SpecialParDo(beam.ParDo):
@@ -256,7 +256,7 @@ class DataflowRunnerTest(unittest.TestCase, ExtraAssertionsMixin):
   def test_streaming_create_translation(self):
     remote_runner = DataflowRunner()
     self.default_properties.append("--streaming")
-    self.default_properties.append("--experiments=disable_runner_v2")
+    self.default_properties.append("--experiments=disable_runner_v2_until_2023")
     with Pipeline(remote_runner, PipelineOptions(self.default_properties)) as p:
       p | ptransform.Create([1])  # pylint: disable=expression-not-assigned
     job_dict = json.loads(str(remote_runner.job))
@@ -269,20 +269,6 @@ class DataflowRunnerTest(unittest.TestCase, ExtraAssertionsMixin):
     self.assertEqual(job_dict[u'steps'][1][u'kind'], u'ParallelDo')
     self.assertEqual(job_dict[u'steps'][2][u'kind'], u'ParallelDo')
 
-  def test_biqquery_read_fn_api_fail(self):
-    remote_runner = DataflowRunner()
-    for flag in ['beam_fn_api', 'use_unified_worker', 'use_runner_v2']:
-      self.default_properties.append("--experiments=%s" % flag)
-      with self.assertRaisesRegex(
-          ValueError,
-          'The Read.BigQuerySource.*is not supported.*'
-          'apache_beam.io.gcp.bigquery.ReadFromBigQuery.*'):
-        with Pipeline(remote_runner,
-                      PipelineOptions(self.default_properties)) as p:
-          _ = p | beam.io.Read(
-              beam.io.BigQuerySource(
-                  'some.table', use_dataflow_native_source=True))
-
   def test_remote_runner_display_data(self):
     remote_runner = DataflowRunner()
     p = Pipeline(
@@ -294,7 +280,8 @@ class DataflowRunnerTest(unittest.TestCase, ExtraAssertionsMixin):
         p | ptransform.Create([1, 2, 3, 4, 5])
         | 'Do' >> SpecialParDo(SpecialDoFn(), now))
 
-    # TODO(BEAM-366) Enable runner API on this test.
+    # TODO(https://github.com/apache/beam/issues/18012) Enable runner API on
+    # this test.
     p.run(test_runner_api=False)
     job_dict = json.loads(str(remote_runner.job))
     steps = [
@@ -324,20 +311,6 @@ class DataflowRunnerTest(unittest.TestCase, ExtraAssertionsMixin):
                          'key': 'dofn_value'
                      }]
     self.assertUnhashableCountEqual(disp_data, expected_data)
-
-  def test_no_group_by_key_directly_after_bigquery(self):
-    remote_runner = DataflowRunner()
-    with self.assertRaises(ValueError,
-                           msg=('Coder for the GroupByKey operation'
-                                '"GroupByKey" is not a key-value coder: '
-                                'RowAsDictJsonCoder')):
-      with beam.Pipeline(runner=remote_runner,
-                         options=PipelineOptions(self.default_properties)) as p:
-        # pylint: disable=expression-not-assigned
-        p | beam.io.Read(
-            beam.io.BigQuerySource(
-                'dataset.faketable',
-                use_dataflow_native_source=True)) | beam.GroupByKey()
 
   def test_group_by_key_input_visitor_with_valid_inputs(self):
     p = TestPipeline()
@@ -622,19 +595,6 @@ class DataflowRunnerTest(unittest.TestCase, ExtraAssertionsMixin):
 
     self.expect_correct_override(runner.job, u'Create/Read', u'ParallelRead')
 
-  def test_read_bigquery_translation(self):
-    runner = DataflowRunner()
-
-    with beam.Pipeline(runner=runner,
-                       options=PipelineOptions(self.default_properties)) as p:
-      # pylint: disable=expression-not-assigned
-      p | beam.io.Read(
-          beam.io.BigQuerySource(
-              'some.table', coder=BytesCoder(),
-              use_dataflow_native_source=True))
-
-    self.expect_correct_override(runner.job, u'Read', u'ParallelRead')
-
   def test_read_pubsub_translation(self):
     runner = DataflowRunner()
 
@@ -748,7 +708,9 @@ class DataflowRunnerTest(unittest.TestCase, ExtraAssertionsMixin):
         out = p | beam.Create([1]) | beam.io.WriteToBigQuery('some.table')
         out['destination_file_pairs'] | 'MyTransform' >> beam.Map(lambda _: _)
 
-  @unittest.skip('BEAM-3736: enable once CombineFnVisitor is fixed')
+  @unittest.skip(
+      'https://github.com/apache/beam/issues/18716: enable once '
+      'CombineFnVisitor is fixed')
   def test_unsupported_combinefn_detection(self):
     class CombinerWithNonDefaultSetupTeardown(combiners.CountCombineFn):
       def setup(self, *args, **kwargs):
@@ -831,7 +793,10 @@ class DataflowRunnerTest(unittest.TestCase, ExtraAssertionsMixin):
         'GroupIntoBatches for jobs not using Runner V2'):
       _ = self._run_group_into_batches_and_get_step_properties(
           True,
-          ['--enable_streaming_engine', '--experiments=disable_runner_v2'])
+          [
+              '--enable_streaming_engine',
+              '--experiments=disable_runner_v2_until_2023'
+          ])
 
     # JRH
     with self.assertRaisesRegex(

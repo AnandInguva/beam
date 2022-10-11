@@ -18,6 +18,7 @@ package graphx
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
@@ -25,11 +26,12 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/window/trigger"
 	v1pb "github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/graphx/v1"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/pipelinex"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/state"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/util/protox"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/internal/errors"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"github.com/golang/protobuf/proto"
-	"github.com/golang/protobuf/ptypes"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // Model constants for interfacing with a Beam runner.
@@ -43,7 +45,7 @@ const (
 	URNCombinePerKey = "beam:transform:combine_per_key:v1"
 	URNWindow        = "beam:transform:window_into:v1"
 
-	// URNIterableSideInput = "beam:side_input:iterable:v1"
+	URNIterableSideInput = "beam:side_input:iterable:v1"
 	URNMultimapSideInput = "beam:side_input:multimap:v1"
 
 	URNGlobalWindowsWindowFn  = "beam:window_fn:global_windows:v1"
@@ -62,20 +64,41 @@ const (
 	URNWindowMappingFixed   = "beam:go:windowmapping:fixed:v1"
 	URNWindowMappingSliding = "beam:go:windowmapping:sliding:v1"
 
-	URNLegacyProgressReporting = "beam:protocol:progress_reporting:v0"
-	URNMultiCore               = "beam:protocol:multi_core_bundle_processing:v1"
+	URNProgressReporting     = "beam:protocol:progress_reporting:v1"
+	URNMultiCore             = "beam:protocol:multi_core_bundle_processing:v1"
+	URNWorkerStatus          = "beam:protocol:worker_status:v1"
+	URNMonitoringInfoShortID = "beam:protocol:monitoring_info_short_ids:v1"
 
-	URNRequiresSplittableDoFn = "beam:requirement:pardo:splittable_dofn:v1"
+	URNRequiresSplittableDoFn     = "beam:requirement:pardo:splittable_dofn:v1"
+	URNRequiresBundleFinalization = "beam:requirement:pardo:finalization:v1"
+	URNRequiresStatefulProcessing = "beam:requirement:pardo:stateful:v1"
+	URNTruncate                   = "beam:transform:sdf_truncate_sized_restrictions:v1"
 
-	URNArtifactGoWorker  = "beam:artifact:type:go_worker_binary:v1"
-	URNArtifactStagingTo = "beam:artifact:role:staging_to:v1"
+	// Deprecated: Determine worker binary based on GoWorkerBinary Role instead.
+	URNArtifactGoWorker = "beam:artifact:type:go_worker_binary:v1"
+
+	URNArtifactFileType     = "beam:artifact:type:file:v1"
+	URNArtifactURLType      = "beam:artifact:type:url:v1"
+	URNArtifactGoWorkerRole = "beam:artifact:role:go_worker_binary:v1"
+
+	// Environment Urns.
+	URNEnvProcess  = "beam:env:process:v1"
+	URNEnvExternal = "beam:env:external:v1"
+	URNEnvDocker   = "beam:env:docker:v1"
+
+	// Userstate Urns.
+	URNBagUserState      = "beam:user_state:bag:v1"
+	URNMultiMapUserState = "beam:user_state:multimap:v1"
 )
 
 func goCapabilities() []string {
 	capabilities := []string{
-		URNLegacyProgressReporting,
+		URNProgressReporting,
 		URNMultiCore,
-		// TOOD(BEAM-9614): Make this versioned.
+		URNTruncate,
+		URNWorkerStatus,
+		URNMonitoringInfoShortID,
+		// TOOD(https://github.com/apache/beam/issues/20287): Make this versioned.
 		"beam:version:sdk_base:go",
 	}
 	return append(capabilities, knownStandardCoders()...)
@@ -85,14 +108,14 @@ func goCapabilities() []string {
 func CreateEnvironment(ctx context.Context, urn string, extractEnvironmentConfig func(context.Context) string) (*pipepb.Environment, error) {
 	var serializedPayload []byte
 	switch urn {
-	case "beam:env:process:v1":
+	case URNEnvProcess:
 		// TODO Support process based SDK Harness.
 		return nil, errors.Errorf("unsupported environment %v", urn)
-	case "beam:env:external:v1":
+	case URNEnvExternal:
 		config := extractEnvironmentConfig(ctx)
 		payload := &pipepb.ExternalPayload{Endpoint: &pipepb.ApiServiceDescriptor{Url: config}}
 		serializedPayload = protox.MustEncode(payload)
-	case "beam:env:docker:v1":
+	case URNEnvDocker:
 		fallthrough
 	default:
 		config := extractEnvironmentConfig(ctx)
@@ -105,11 +128,9 @@ func CreateEnvironment(ctx context.Context, urn string, extractEnvironmentConfig
 		Capabilities: goCapabilities(),
 		Dependencies: []*pipepb.ArtifactInformation{
 			{
-				TypeUrn: URNArtifactGoWorker,
-				RoleUrn: URNArtifactStagingTo,
-				RolePayload: protox.MustEncode(&pipepb.ArtifactStagingToRolePayload{
-					StagedName: "worker",
-				}),
+				TypeUrn:     URNArtifactFileType,
+				TypePayload: protox.MustEncode(&pipepb.ArtifactFilePayload{}),
+				RoleUrn:     URNArtifactGoWorkerRole,
 			},
 		},
 	}, nil
@@ -157,10 +178,12 @@ func Marshal(edges []*graph.MultiEdge, opt *Options) (*pipepb.Pipeline, error) {
 
 	// If there are external transforms that need expanding, do it now.
 	if m.needsExpansion {
-		// Remap outputs of expanded external transforms to be the inputs for all downstream consumers
-		purgeOutputInput(edges, p)
 		// Merge the expanded components into the existing pipeline
 		mergeExpandedWithPipeline(edges, p)
+
+		// Remap outputs of expanded external transforms to be the inputs for all downstream consumers
+		// Must happen after merging, so that the inputs in the expanded transforms are also updated.
+		purgeOutputInput(edges, p)
 	}
 
 	return p, nil
@@ -212,6 +235,7 @@ func (m *marshaller) getRequirements() []string {
 			reqs = append(reqs, req)
 		}
 	}
+	sort.Strings(reqs)
 	return reqs
 }
 
@@ -367,45 +391,6 @@ func (m *marshaller) addMultiEdge(edge NamedEdge) ([]string, error) {
 				// ignore: not a side input
 
 			case graph.Singleton, graph.Slice, graph.Iter, graph.ReIter:
-				// The only supported form of side input is MultiMap, but we
-				// want just iteration. So we must manually add a fixed key,
-				// "", even if the input is already KV.
-
-				out := fmt.Sprintf("%v_keyed%v_%v", nodeID(in.From), edgeID(edge.Edge), i)
-				coderId, err := m.coders.Add(makeBytesKeyedCoder(in.From.Coder))
-				if err != nil {
-					return handleErr(err)
-				}
-				if _, err := m.makeNode(out, coderId, in.From); err != nil {
-					return handleErr(err)
-				}
-
-				payload := &pipepb.ParDoPayload{
-					DoFn: &pipepb.FunctionSpec{
-						Urn: URNIterableSideInputKey,
-						Payload: []byte(protox.MustEncodeBase64(&v1pb.TransformPayload{
-							Urn: URNIterableSideInputKey,
-						})),
-					},
-				}
-
-				keyedID := fmt.Sprintf("%v_keyed%v", edgeID(edge.Edge), i)
-				keyed := &pipepb.PTransform{
-					UniqueName: keyedID,
-					Spec: &pipepb.FunctionSpec{
-						Urn:     URNParDo,
-						Payload: protox.MustEncode(payload),
-					},
-					Inputs:        map[string]string{"i0": nodeID(in.From)},
-					Outputs:       map[string]string{"i0": out},
-					EnvironmentId: m.addDefaultEnv(),
-				}
-				m.transforms[keyedID] = keyed
-				allPIds = append(allPIds, keyedID)
-
-				// Fixup input map
-				inputs[fmt.Sprintf("i%v", i)] = out
-
 				siWfn := in.From.WindowingStrategy().Fn
 				mappingUrn := getSideWindowMappingUrn(siWfn)
 
@@ -416,7 +401,7 @@ func (m *marshaller) addMultiEdge(edge NamedEdge) ([]string, error) {
 
 				si[fmt.Sprintf("i%v", i)] = &pipepb.SideInput{
 					AccessPattern: &pipepb.FunctionSpec{
-						Urn: URNMultimapSideInput,
+						Urn: URNIterableSideInput,
 					},
 					ViewFn: &pipepb.FunctionSpec{
 						Urn: "foo",
@@ -468,12 +453,120 @@ func (m *marshaller) addMultiEdge(edge NamedEdge) ([]string, error) {
 			SideInputs: si,
 		}
 		if edge.Edge.DoFn.IsSplittable() {
-			coderId, err := m.coders.Add(edge.Edge.RestrictionCoder)
+			coderID, err := m.coders.Add(edge.Edge.RestrictionCoder)
 			if err != nil {
 				return handleErr(err)
 			}
-			payload.RestrictionCoderId = coderId
+			payload.RestrictionCoderId = coderID
 			m.requirements[URNRequiresSplittableDoFn] = true
+		}
+		if _, ok := edge.Edge.DoFn.ProcessElementFn().BundleFinalization(); ok {
+			m.requirements[URNRequiresBundleFinalization] = true
+		}
+		if _, ok := edge.Edge.DoFn.ProcessElementFn().StateProvider(); ok {
+			m.requirements[URNRequiresStatefulProcessing] = true
+			stateSpecs := make(map[string]*pipepb.StateSpec)
+			for _, ps := range edge.Edge.DoFn.PipelineState() {
+				coderID := ""
+				c, ok := edge.Edge.StateCoders[UserStateCoderID(ps)]
+				if ok {
+					coderID, err = m.coders.Add(c)
+					if err != nil {
+						return handleErr(err)
+					}
+				}
+				keyCoderID := ""
+				if c, ok := edge.Edge.StateCoders[UserStateKeyCoderID(ps)]; ok {
+					keyCoderID, err = m.coders.Add(c)
+					if err != nil {
+						return handleErr(err)
+					}
+				} else if ps.StateType() == state.TypeMap || ps.StateType() == state.TypeSet {
+					return nil, errors.Errorf("set or map state type %v must have a key coder type, none detected", ps)
+				}
+				switch ps.StateType() {
+				case state.TypeValue:
+					stateSpecs[ps.StateKey()] = &pipepb.StateSpec{
+						Spec: &pipepb.StateSpec_ReadModifyWriteSpec{
+							ReadModifyWriteSpec: &pipepb.ReadModifyWriteStateSpec{
+								CoderId: coderID,
+							},
+						},
+						Protocol: &pipepb.FunctionSpec{
+							Urn: URNBagUserState,
+						},
+					}
+				case state.TypeBag:
+					stateSpecs[ps.StateKey()] = &pipepb.StateSpec{
+						Spec: &pipepb.StateSpec_BagSpec{
+							BagSpec: &pipepb.BagStateSpec{
+								ElementCoderId: coderID,
+							},
+						},
+						Protocol: &pipepb.FunctionSpec{
+							Urn: URNBagUserState,
+						},
+					}
+				case state.TypeCombining:
+					cps := ps.(state.CombiningPipelineState).GetCombineFn()
+					f, err := graph.NewFn(cps)
+					if err != nil {
+						return handleErr(err)
+					}
+					cf, err := graph.AsCombineFn(f)
+					if err != nil {
+						return handleErr(err)
+					}
+					me := graph.MultiEdge{
+						Op:        graph.Combine,
+						CombineFn: cf,
+					}
+					mustEncodeMultiEdge, err := mustEncodeMultiEdgeBase64(&me)
+					if err != nil {
+						return handleErr(err)
+					}
+					stateSpecs[ps.StateKey()] = &pipepb.StateSpec{
+						Spec: &pipepb.StateSpec_CombiningSpec{
+							CombiningSpec: &pipepb.CombiningStateSpec{
+								AccumulatorCoderId: coderID,
+								CombineFn: &pipepb.FunctionSpec{
+									Urn:     "beam:combinefn:gosdk:v1",
+									Payload: []byte(mustEncodeMultiEdge),
+								},
+							},
+						},
+						Protocol: &pipepb.FunctionSpec{
+							Urn: URNBagUserState,
+						},
+					}
+				case state.TypeMap:
+					stateSpecs[ps.StateKey()] = &pipepb.StateSpec{
+						Spec: &pipepb.StateSpec_MapSpec{
+							MapSpec: &pipepb.MapStateSpec{
+								KeyCoderId:   keyCoderID,
+								ValueCoderId: coderID,
+							},
+						},
+						Protocol: &pipepb.FunctionSpec{
+							Urn: URNMultiMapUserState,
+						},
+					}
+				case state.TypeSet:
+					stateSpecs[ps.StateKey()] = &pipepb.StateSpec{
+						Spec: &pipepb.StateSpec_SetSpec{
+							SetSpec: &pipepb.SetStateSpec{
+								ElementCoderId: keyCoderID,
+							},
+						},
+						Protocol: &pipepb.FunctionSpec{
+							Urn: URNMultiMapUserState,
+						},
+					}
+				default:
+					return nil, errors.Errorf("State type %v not recognized for state %v", ps.StateKey(), ps)
+				}
+			}
+			payload.StateSpecs = stateSpecs
 		}
 		spec = &pipepb.FunctionSpec{Urn: URNParDo, Payload: protox.MustEncode(payload)}
 		annotations = edge.Edge.DoFn.Annotations()
@@ -613,7 +706,7 @@ func (m *marshaller) expandCrossLanguage(namedEdge NamedEdge) (string, error) {
 }
 
 func (m *marshaller) expandCoGBK(edge NamedEdge) (string, error) {
-	// TODO(BEAM-490): replace once CoGBK is a primitive. For now, we have to translate
+	// TODO(https://github.com/apache/beam/issues/18032): replace once CoGBK is a primitive. For now, we have to translate
 	// CoGBK with multiple PCollections as described in cogbk.go.
 	handleErr := func(err error) (string, error) {
 		return "", errors.Wrapf(err, "failed to expand CoGBK transform for edge: %v", edge)
@@ -806,7 +899,8 @@ func (m *marshaller) expandReshuffle(edge NamedEdge) (string, error) {
 	}
 	// We need to preserve the old windowing/triggering here
 	// for re-instatement after the GBK.
-	preservedWSId := m.pcollections[origInput].GetWindowingStrategyId()
+	preservedWSID := m.pcollections[origInput].GetWindowingStrategyId()
+	preservedCoderID, coderPayloads := m.marshalReshuffleCodersForPCollection(origInput)
 
 	// Get the windowing strategy from before:
 	postReify := fmt.Sprintf("%v_%v_reifyts", nodeID(in.From), id)
@@ -822,11 +916,11 @@ func (m *marshaller) expandReshuffle(edge NamedEdge) (string, error) {
 		if err != nil {
 			return handleErr(err)
 		}
-		coderId, err := makeWindowCoder(wfn)
+		coderID, err := makeWindowCoder(wfn)
 		if err != nil {
 			return handleErr(err)
 		}
-		windowCoderId, err := m.coders.AddWindowCoder(coderId)
+		windowCoderID, err := m.coders.AddWindowCoder(coderID)
 		if err != nil {
 			return handleErr(err)
 		}
@@ -849,9 +943,9 @@ func (m *marshaller) expandReshuffle(edge NamedEdge) (string, error) {
 				// TODO(BEAM-3304): migrate to user side operations once trigger support is in.
 				EnvironmentId:   m.addDefaultEnv(),
 				MergeStatus:     pipepb.MergeStatus_NON_MERGING,
-				WindowCoderId:   windowCoderId,
+				WindowCoderId:   windowCoderID,
 				ClosingBehavior: pipepb.ClosingBehavior_EMIT_IF_NONEMPTY,
-				AllowedLateness: 0,
+				AllowedLateness: int64(in.From.WindowingStrategy().AllowedLateness),
 				OnTimeBehavior:  pipepb.OnTimeBehavior_FIRE_ALWAYS,
 			})
 	}
@@ -864,6 +958,10 @@ func (m *marshaller) expandReshuffle(edge NamedEdge) (string, error) {
 			Urn: URNReshuffleInput,
 			Payload: []byte(protox.MustEncodeBase64(&v1pb.TransformPayload{
 				Urn: URNReshuffleInput,
+				Reshuffle: &v1pb.ReshufflePayload{
+					CoderId:       preservedCoderID,
+					CoderPayloads: coderPayloads,
+				},
 			})),
 		},
 	}
@@ -905,7 +1003,7 @@ func (m *marshaller) expandReshuffle(edge NamedEdge) (string, error) {
 	if err != nil {
 		return handleErr(err)
 	}
-	m.pcollections[outPCol].WindowingStrategyId = preservedWSId
+	m.pcollections[outPCol].WindowingStrategyId = preservedWSID
 
 	outputID := fmt.Sprintf("%v_unreify", id)
 	outputPayload := &pipepb.ParDoPayload{
@@ -913,6 +1011,10 @@ func (m *marshaller) expandReshuffle(edge NamedEdge) (string, error) {
 			Urn: URNReshuffleOutput,
 			Payload: []byte(protox.MustEncodeBase64(&v1pb.TransformPayload{
 				Urn: URNReshuffleOutput,
+				Reshuffle: &v1pb.ReshufflePayload{
+					CoderId:       preservedCoderID,
+					CoderPayloads: coderPayloads,
+				},
 			})),
 		},
 	}
@@ -940,6 +1042,28 @@ func (m *marshaller) expandReshuffle(edge NamedEdge) (string, error) {
 		EnvironmentId: m.addDefaultEnv(),
 	}
 	return reshuffleID, nil
+}
+
+func (m *marshaller) marshalReshuffleCodersForPCollection(pcolID string) (string, map[string][]byte) {
+	preservedCoderId := m.pcollections[pcolID].GetCoderId()
+
+	cps := map[string][]byte{}
+	cs := []string{preservedCoderId}
+	for cs != nil {
+		var next []string
+		for _, cid := range cs {
+			c := m.coders.coders[cid]
+			cps[cid] = protox.MustEncode(c)
+			for _, newCid := range c.GetComponentCoderIds() {
+				if _, ok := cps[newCid]; !ok {
+					next = append(next, c.GetComponentCoderIds()...)
+				}
+			}
+		}
+		cs = next
+	}
+
+	return preservedCoderId, cps
 }
 
 func (m *marshaller) addNode(n *graph.Node) (string, error) {
@@ -979,6 +1103,7 @@ func boolToBounded(bounded bool) pipepb.IsBounded_Enum {
 	return pipepb.IsBounded_UNBOUNDED
 }
 
+// defaultEnvId is the environment ID used for Go Pipeline Environments.
 const defaultEnvId = "go"
 
 func (m *marshaller) addDefaultEnv() string {
@@ -1016,11 +1141,11 @@ func MarshalWindowingStrategy(c *CoderMarshaller, w *window.WindowingStrategy) (
 	if err != nil {
 		return nil, err
 	}
-	coderId, err := makeWindowCoder(w.Fn)
+	coderID, err := makeWindowCoder(w.Fn)
 	if err != nil {
 		return nil, err
 	}
-	windowCoderId, err := c.AddWindowCoder(coderId)
+	windowCoderID, err := c.AddWindowCoder(coderID)
 	if err != nil {
 		return nil, err
 	}
@@ -1034,12 +1159,12 @@ func MarshalWindowingStrategy(c *CoderMarshaller, w *window.WindowingStrategy) (
 	ws := &pipepb.WindowingStrategy{
 		WindowFn:         windowFn,
 		MergeStatus:      mergeStat,
-		WindowCoderId:    windowCoderId,
+		WindowCoderId:    windowCoderID,
 		Trigger:          makeTrigger(w.Trigger),
 		AccumulationMode: makeAccumulationMode(w.AccumulationMode),
 		OutputTime:       pipepb.OutputTime_END_OF_WINDOW,
 		ClosingBehavior:  pipepb.ClosingBehavior_EMIT_IF_NONEMPTY,
-		AllowedLateness:  0,
+		AllowedLateness:  int64(w.AllowedLateness),
 		OnTimeBehavior:   pipepb.OnTimeBehavior_FIRE_IF_NONEMPTY,
 	}
 	return ws, nil
@@ -1158,6 +1283,23 @@ func makeTrigger(t trigger.Trigger) *pipepb.Trigger {
 				AfterSynchronizedProcessingTime: &pipepb.Trigger_AfterSynchronizedProcessingTime{},
 			},
 		}
+	case *trigger.OrFinallyTrigger:
+		return &pipepb.Trigger{
+			Trigger: &pipepb.Trigger_OrFinally_{
+				OrFinally: &pipepb.Trigger_OrFinally{
+					Main:    makeTrigger(t.Main()),
+					Finally: makeTrigger(t.Finally()),
+				},
+			},
+		}
+	case *trigger.AfterEachTrigger:
+		return &pipepb.Trigger{
+			Trigger: &pipepb.Trigger_AfterEach_{
+				AfterEach: &pipepb.Trigger_AfterEach{
+					Subtriggers: extractSubtriggers(t.Subtriggers()),
+				},
+			},
+		}
 	default:
 		return &pipepb.Trigger{
 			Trigger: &pipepb.Trigger_Default_{
@@ -1190,7 +1332,7 @@ func makeWindowFn(w *window.Fn) (*pipepb.FunctionSpec, error) {
 			Urn: URNFixedWindowsWindowFn,
 			Payload: protox.MustEncode(
 				&pipepb.FixedWindowsPayload{
-					Size: ptypes.DurationProto(w.Size),
+					Size: durationpb.New(w.Size),
 				},
 			),
 		}, nil
@@ -1199,8 +1341,8 @@ func makeWindowFn(w *window.Fn) (*pipepb.FunctionSpec, error) {
 			Urn: URNSlidingWindowsWindowFn,
 			Payload: protox.MustEncode(
 				&pipepb.SlidingWindowsPayload{
-					Size:   ptypes.DurationProto(w.Size),
-					Period: ptypes.DurationProto(w.Period),
+					Size:   durationpb.New(w.Size),
+					Period: durationpb.New(w.Period),
 				},
 			),
 		}, nil
@@ -1209,7 +1351,7 @@ func makeWindowFn(w *window.Fn) (*pipepb.FunctionSpec, error) {
 			Urn: URNSessionsWindowFn,
 			Payload: protox.MustEncode(
 				&pipepb.SessionWindowsPayload{
-					GapSize: ptypes.DurationProto(w.Gap),
+					GapSize: durationpb.New(w.Gap),
 				},
 			),
 		}, nil
@@ -1240,12 +1382,6 @@ func mustEncodeMultiEdgeBase64(edge *graph.MultiEdge) (string, error) {
 	}), nil
 }
 
-// makeBytesKeyedCoder returns KV<[]byte,A,> for any coder,
-// even if the coder is already a KV coder.
-func makeBytesKeyedCoder(c *coder.Coder) *coder.Coder {
-	return coder.NewKV([]*coder.Coder{coder.NewBytes(), c})
-}
-
 func edgeID(edge *graph.MultiEdge) string {
 	return fmt.Sprintf("e%v", edge.ID())
 }
@@ -1256,4 +1392,34 @@ func nodeID(n *graph.Node) string {
 
 func scopeID(s *graph.Scope) string {
 	return fmt.Sprintf("s%v", s.ID())
+}
+
+// UpdateDefaultEnvWorkerType is so runners can update the pipeline's default environment
+// with the correct artifact type and payload for the Go worker binary.
+func UpdateDefaultEnvWorkerType(typeUrn string, pyld []byte, p *pipepb.Pipeline) error {
+	// Get the Go environment out.
+	envs := p.GetComponents().GetEnvironments()
+	env, ok := envs[defaultEnvId]
+	if !ok {
+		return errors.Errorf("unable to find default Go environment with ID %q", defaultEnvId)
+	}
+	for _, dep := range env.GetDependencies() {
+		if dep.RoleUrn != URNArtifactGoWorkerRole {
+			continue
+		}
+		dep.TypeUrn = typeUrn
+		dep.TypePayload = pyld
+		return nil
+	}
+	return errors.Errorf("unable to find dependency with %q role in environment with ID %q,", URNArtifactGoWorkerRole, defaultEnvId)
+}
+
+// UserStateCoderID returns the coder id of a user state
+func UserStateCoderID(ps state.PipelineState) string {
+	return fmt.Sprintf("val_%v", ps.StateKey())
+}
+
+// UserStateKeyCoderID returns the key coder id of a user state
+func UserStateKeyCoderID(ps state.PipelineState) string {
+	return fmt.Sprintf("key_%v", ps.StateKey())
 }

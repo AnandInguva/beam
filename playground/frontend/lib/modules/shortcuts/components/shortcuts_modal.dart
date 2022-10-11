@@ -16,25 +16,33 @@
  * limitations under the License.
  */
 
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_gen/gen_l10n/app_localizations.dart';
 import 'package:playground/constants/font_weight.dart';
 import 'package:playground/constants/sizes.dart';
 import 'package:playground/modules/shortcuts/components/shortcut_row.dart';
 import 'package:playground/modules/shortcuts/constants/global_shortcuts.dart';
+import 'package:playground_components/playground_components.dart';
 
-const kCloseText = 'CLOSE';
 const kButtonBorderRadius = 24.0;
 const kButtonWidth = 120.0;
 const kButtonHeight = 40.0;
 const kDialogPadding = 40.0;
 
 class ShortcutsModal extends StatelessWidget {
-  const ShortcutsModal({Key? key}) : super(key: key);
+  final PlaygroundController playgroundController;
+
+  const ShortcutsModal({
+    required this.playgroundController,
+  });
 
   @override
   Widget build(BuildContext context) {
+    AppLocalizations appLocale = AppLocalizations.of(context)!;
+
     return AlertDialog(
-      title: const Text('Shortcuts'),
+      title: Text(appLocale.shortcuts),
       titlePadding: const EdgeInsets.only(
         top: kDialogPadding,
         left: kDialogPadding,
@@ -48,7 +56,10 @@ class ShortcutsModal extends StatelessWidget {
         crossAxisAlignment: WrapCrossAlignment.start,
         runSpacing: kXlSpacing,
         children: [
-          ...globalShortcuts.map(
+          ...[
+            ...playgroundController.shortcuts,
+            ...globalShortcuts,
+          ].map(
             (shortcut) => Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
@@ -56,7 +67,7 @@ class ShortcutsModal extends StatelessWidget {
                 Expanded(
                   flex: 3,
                   child: Text(
-                    shortcut.name,
+                    shortcut.actionIntent.slug.tr(),
                     style: const TextStyle(fontWeight: kBoldWeight),
                   ),
                 ),
@@ -67,7 +78,6 @@ class ShortcutsModal extends StatelessWidget {
       ),
       actions: [
         ElevatedButton(
-          child: const Text(kCloseText),
           style: ButtonStyle(
             elevation: MaterialStateProperty.all<double>(0.0),
             fixedSize: MaterialStateProperty.all<Size>(
@@ -78,6 +88,7 @@ class ShortcutsModal extends StatelessWidget {
             ),
           ),
           onPressed: () => Navigator.of(context).pop(),
+          child: Text(appLocale.close),
         ),
       ],
     );

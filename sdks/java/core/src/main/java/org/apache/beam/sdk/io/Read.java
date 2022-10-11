@@ -28,11 +28,13 @@ import java.io.Serializable;
 import java.util.Arrays;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.concurrent.TimeUnit;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.CoderException;
 import org.apache.beam.sdk.coders.InstantCoder;
 import org.apache.beam.sdk.coders.NullableCoder;
 import org.apache.beam.sdk.coders.SerializableCoder;
+import org.apache.beam.sdk.coders.SnappyCoder;
 import org.apache.beam.sdk.coders.StructuredCoder;
 import org.apache.beam.sdk.io.UnboundedSource.CheckpointMark;
 import org.apache.beam.sdk.io.UnboundedSource.CheckpointMark.NoopCheckpointMark;
@@ -82,7 +84,7 @@ import org.slf4j.LoggerFactory;
  * </pre>
  */
 @SuppressWarnings({
-  "nullness", // TODO(https://issues.apache.org/jira/browse/BEAM-10402)
+  "nullness", // TODO(https://github.com/apache/beam/issues/20497)
   "rawtypes"
 })
 public class Read {
@@ -147,7 +149,7 @@ public class Read {
           .getPipeline()
           .apply(Impulse.create())
           .apply(ParDo.of(new OutputSingleSource<>(source)))
-          .setCoder(SerializableCoder.of(new TypeDescriptor<BoundedSource<T>>() {}))
+          .setCoder(SnappyCoder.of(SerializableCoder.of(new TypeDescriptor<BoundedSource<T>>() {})))
           .apply(ParDo.of(new BoundedSourceAsSDFWrapperFn<>()))
           .setCoder(source.getOutputCoder())
           .setTypeDescriptor(source.getOutputCoder().getEncodedTypeDescriptor());
@@ -198,8 +200,11 @@ public class Read {
      * Returns a new {@link BoundedReadFromUnboundedSource} that reads a bounded amount of data from
      * the given {@link UnboundedSource}. The bound is specified as an amount of time to read for.
      * Each split of the source will read for this much time.
+     *
+     * @param maxReadTime upper bound of how long to read from the unbounded source; disabled if
+     *     null
      */
-    public BoundedReadFromUnboundedSource<T> withMaxReadTime(Duration maxReadTime) {
+    public BoundedReadFromUnboundedSource<T> withMaxReadTime(@Nullable Duration maxReadTime) {
       return new BoundedReadFromUnboundedSource<>(source, Long.MAX_VALUE, maxReadTime);
     }
 
@@ -215,7 +220,9 @@ public class Read {
               .apply(Impulse.create())
               .apply(ParDo.of(new OutputSingleSource<>(source)))
               .setCoder(
-                  SerializableCoder.of(new TypeDescriptor<UnboundedSource<T, CheckpointMark>>() {}))
+                  SnappyCoder.of(
+                      SerializableCoder.of(
+                          new TypeDescriptor<UnboundedSource<T, CheckpointMark>>() {})))
               .apply(ParDo.of(createUnboundedSdfWrapper()))
               .setCoder(ValueWithRecordIdCoder.of(source.getOutputCoder()));
 
@@ -313,7 +320,7 @@ public class Read {
 
     @GetRestrictionCoder
     public Coder<BoundedSourceT> restrictionCoder() {
-      return SerializableCoder.of(new TypeDescriptor<BoundedSourceT>() {});
+      return SnappyCoder.of(SerializableCoder.of(new TypeDescriptor<BoundedSourceT>() {}));
     }
 
     /**
@@ -470,7 +477,7 @@ public class Read {
       restrictionCoder = restrictionCoder();
       cachedReaders =
           CacheBuilder.newBuilder()
-              .expireAfterWrite(java.time.Duration.ofMinutes(1))
+              .expireAfterWrite(1, TimeUnit.MINUTES)
               .maximumSize(100)
               .removalListener(
                   (RemovalListener<Object, UnboundedReader>)
@@ -599,9 +606,10 @@ public class Read {
 
     @GetRestrictionCoder
     public Coder<UnboundedSourceRestriction<OutputT, CheckpointT>> restrictionCoder() {
-      return new UnboundedSourceRestrictionCoder<>(
-          SerializableCoder.of(new TypeDescriptor<UnboundedSource<OutputT, CheckpointT>>() {}),
-          NullableCoder.of(checkpointCoder));
+      return SnappyCoder.of(
+          new UnboundedSourceRestrictionCoder<>(
+              SerializableCoder.of(new TypeDescriptor<UnboundedSource<OutputT, CheckpointT>>() {}),
+              NullableCoder.of(checkpointCoder)));
     }
 
     /**

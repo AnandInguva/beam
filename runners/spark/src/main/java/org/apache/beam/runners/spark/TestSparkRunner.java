@@ -58,7 +58,7 @@ import org.slf4j.LoggerFactory;
  * SparkPipelineResult result = (SparkPipelineResult) p.run(); }
  */
 @SuppressWarnings({
-  "nullness" // TODO(https://issues.apache.org/jira/browse/BEAM-10402)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
 })
 public final class TestSparkRunner extends PipelineRunner<SparkPipelineResult> {
 
@@ -82,7 +82,9 @@ public final class TestSparkRunner extends PipelineRunner<SparkPipelineResult> {
     TestSparkPipelineOptions testSparkOptions =
         PipelineOptionsValidator.validate(TestSparkPipelineOptions.class, options);
 
-    boolean isForceStreaming = testSparkOptions.isForceStreaming();
+    SparkRunner.detectTranslationMode(pipeline, testSparkOptions);
+    boolean isStreaming = testSparkOptions.isStreaming();
+
     SparkPipelineResult result = null;
 
     // clear state of Aggregators, Metrics and Watermarks if exists.
@@ -90,10 +92,10 @@ public final class TestSparkRunner extends PipelineRunner<SparkPipelineResult> {
     MetricsAccumulator.clear();
     GlobalWatermarkHolder.clear();
 
-    LOG.info("About to run test pipeline " + options.getJobName());
+    LOG.info("About to run test pipeline {}", options.getJobName());
 
     // if the pipeline was executed in streaming mode, validate aggregators.
-    if (isForceStreaming) {
+    if (isStreaming) {
       try {
         result = delegate.run(pipeline);
         awaitWatermarksOrTimeout(testSparkOptions, result);

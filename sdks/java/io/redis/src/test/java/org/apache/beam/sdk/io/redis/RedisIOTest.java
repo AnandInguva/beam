@@ -37,6 +37,7 @@ import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.coders.MapCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.io.common.NetworkTestHelper;
+import org.apache.beam.sdk.io.range.ByteKey;
 import org.apache.beam.sdk.io.redis.RedisIO.Write.Method;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
@@ -52,7 +53,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.StreamEntry;
+import redis.clients.jedis.StreamEntryID;
+import redis.clients.jedis.resps.StreamEntry;
 import redis.embedded.RedisServer;
 
 /** Test on the Redis IO. */
@@ -100,6 +102,38 @@ public class RedisIOTest {
   }
 
   @Test
+  public void testReadSplitBig() {
+    List<KV<String, String>> data = buildIncrementalData("bigset", 1000);
+    data.forEach(kv -> client.set(kv.getKey(), kv.getValue()));
+
+    PCollection<KV<String, String>> read =
+        p.apply(
+            "Read",
+            RedisIO.read()
+                .withEndpoint(REDIS_HOST, port)
+                .withKeyPattern("bigset*")
+                .withBatchSize(8));
+    PAssert.that(read).containsInAnyOrder(data);
+    p.run();
+  }
+
+  @Test
+  public void testReadSplitSmall() {
+    List<KV<String, String>> data = buildIncrementalData("smallset", 5);
+    data.forEach(kv -> client.set(kv.getKey(), kv.getValue()));
+
+    PCollection<KV<String, String>> read =
+        p.apply(
+            "Read",
+            RedisIO.read()
+                .withEndpoint(REDIS_HOST, port)
+                .withKeyPattern("smallset*")
+                .withBatchSize(20));
+    PAssert.that(read).containsInAnyOrder(data);
+    p.run();
+  }
+
+  @Test
   public void testReadWithKeyPattern() {
     List<KV<String, String>> data = buildIncrementalData("pattern", 10);
     data.forEach(kv -> client.set(kv.getKey(), kv.getValue()));
@@ -128,7 +162,7 @@ public class RedisIOTest {
     p.run();
 
     assertEquals(newValue, client.get(key));
-    assertEquals(NO_EXPIRATION, client.ttl(key));
+    assertEquals(NO_EXPIRATION, Long.valueOf(client.ttl(key)));
   }
 
   @Test
@@ -208,7 +242,7 @@ public class RedisIOTest {
 
     long count = client.pfcount(key);
     assertEquals(6, count);
-    assertEquals(NO_EXPIRATION, client.ttl(key));
+    assertEquals(NO_EXPIRATION, Long.valueOf(client.ttl(key)));
   }
 
   @Test
@@ -289,7 +323,8 @@ public class RedisIOTest {
     p.run();
 
     for (String key : redisKeys) {
-      List<StreamEntry> streamEntries = client.xrange(key, null, null, Integer.MAX_VALUE);
+      List<StreamEntry> streamEntries =
+          client.xrange(key, (StreamEntryID) null, (StreamEntryID) null, Integer.MAX_VALUE);
       assertEquals(2, streamEntries.size());
       assertThat(transform(streamEntries, StreamEntry::getFields), hasItems(fooValues, barValues));
     }
@@ -327,6 +362,42 @@ public class RedisIOTest {
       long count = client.xlen(stream);
       assertEquals(1, count);
     }
+  }
+
+  @Test
+  public void redisCursorToByteKey() {
+    RedisCursor redisCursor = RedisCursor.of("80", 200, true);
+    ByteKey byteKey = RedisCursor.redisCursorToByteKey(redisCursor);
+    assertEquals(ByteKey.of(0, 0, 0, 0, 0, 0, 0, 10), byteKey);
+  }
+
+  @Test
+  public void redisCursorToByteKeyZeroStart() {
+    RedisCursor redisCursor = RedisCursor.of("0", 200, true);
+    ByteKey byteKey = RedisCursor.redisCursorToByteKey(redisCursor);
+    assertEquals(RedisCursor.ZERO_KEY, byteKey);
+  }
+
+  @Test
+  public void redisCursorToByteKeyZeroEnd() {
+    RedisCursor redisCursor = RedisCursor.of("0", 200, false);
+    ByteKey byteKey = RedisCursor.redisCursorToByteKey(redisCursor);
+    assertEquals(ByteKey.EMPTY, byteKey);
+  }
+
+  @Test
+  public void redisCursorToByteKeyAndBack() {
+    RedisCursor redisCursor = RedisCursor.of("80", 200, true);
+    ByteKey byteKey = RedisCursor.redisCursorToByteKey(redisCursor);
+    RedisCursor result = RedisCursor.byteKeyToRedisCursor(byteKey, 200, true);
+    assertEquals(redisCursor.getCursor(), result.getCursor());
+  }
+
+  @Test
+  public void redisByteKeyToRedisCursor() {
+    ByteKey bytes = ByteKey.of(0, 0, 0, 0, 0, 25, 68, 103);
+    RedisCursor redisCursor = RedisCursor.byteKeyToRedisCursor(bytes, 1048586, true);
+    assertEquals("1885267", redisCursor.getCursor());
   }
 
   private static List<KV<String, String>> buildConstantKeyList(String key, List<String> values) {

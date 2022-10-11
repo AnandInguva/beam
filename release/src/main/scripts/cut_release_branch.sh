@@ -92,7 +92,7 @@ echo ${MASTER_BRANCH}
 echo "==============================================================="
 
 # Update master branch
-sh "$SCRIPT_DIR"/set_version.sh "$NEXT_VERSION_IN_BASE_BRANCH"
+bash "$SCRIPT_DIR"/set_version.sh "$NEXT_VERSION_IN_BASE_BRANCH"
 
 echo "==============Update master branch as following================"
 git diff
@@ -125,7 +125,7 @@ echo "==================Current working branch======================="
 echo ${RELEASE_BRANCH}
 echo "==============================================================="
 
-sed -i -e "s/'beam-master-.*'/'beam-${RELEASE}'/g" runners/google-cloud-dataflow-java/build.gradle
+sed -i -e "s/'beam-master-.*'/'${RELEASE}'/g" runners/google-cloud-dataflow-java/build.gradle
 
 echo "===============Update release branch as following=============="
 git diff

@@ -87,6 +87,8 @@ func printShortComposite(t reflect.Type) string {
 		return "CoGBK"
 	case KVType:
 		return "KV"
+	case NullableType:
+		return "Nullable"
 	default:
 		return fmt.Sprintf("invalid(%v)", t)
 	}
@@ -136,6 +138,8 @@ func New(t reflect.Type, components ...FullType) FullType {
 			if isAnyNonKVComposite(components) {
 				panic("Invalid to nest composites inside CoGBK")
 			}
+			return &tree{class, t, components}
+		case TimersType:
 			return &tree{class, t, components}
 		default:
 			panic(fmt.Sprintf("Unexpected composite type: %v", t))

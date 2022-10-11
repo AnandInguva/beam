@@ -14,6 +14,18 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+# beam-playground:
+#   name: HelloBeam
+#   description: Task from katas to create a simple pipeline that takes a hardcoded input element "Hello Beam".
+#   multifile: false
+#   context_line: 30
+#   categories:
+#     - Testing
+#     - Quickstart
+#   complexity: BASIC
+#   tags:
+#     - hellobeam
+
 import apache_beam as beam
 
 from log_elements import LogElements

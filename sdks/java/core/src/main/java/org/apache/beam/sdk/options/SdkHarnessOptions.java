@@ -22,10 +22,12 @@ import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Prec
 import com.fasterxml.jackson.annotation.JsonCreator;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.annotations.Experimental.Kind;
 import org.apache.beam.sdk.util.InstanceBuilder;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.annotations.VisibleForTesting;
 import org.checkerframework.checker.index.qual.NonNegative;
 
 /** Options that are used to control configuration of the SDK harness. */
@@ -85,14 +87,26 @@ public interface SdkHarnessOptions extends PipelineOptions {
   void setSdkHarnessLogLevelOverrides(SdkHarnessLogLevelOverrides value);
 
   /**
-   * Size (in MB) of each grouping table used to pre-combine elements. If unset, defaults to 100 MB.
+   * Size (in MB) of each grouping table used to pre-combine elements. Larger values may reduce the
+   * amount of data shuffled. If unset, defaults to 100 MB.
    *
    * <p>CAUTION: If set too large, workers may run into OOM conditions more easily, each worker may
    * have many grouping tables in-memory concurrently.
+   *
+   * <p>CAUTION: This option does not apply to portable runners such as Dataflow Prime. See {@link
+   * #setMaxCacheMemoryUsageMb}, {@link #setMaxCacheMemoryUsagePercent}, or {@link
+   * #setMaxCacheMemoryUsageMbClass} to configure memory thresholds that apply to the grouping table
+   * and other cached objects.
    */
   @Description(
-      "The size (in MB) of the grouping tables used to pre-combine elements before "
-          + "shuffling.  Larger values may reduce the amount of data shuffled.")
+      "The size (in MB) of the grouping tables used to pre-combine elements before shuffling. If "
+          + "unset, defaults to 100 MB. Larger values may reduce the amount of data shuffled. "
+          + "CAUTION: If set too large, workers may run into OOM conditions more easily, each "
+          + "worker may have many grouping tables in-memory concurrently. CAUTION: This option "
+          + "does not apply to portable runners such as Dataflow Prime. See "
+          + "--maxCacheMemoryUsageMb, --maxCacheMemoryUsagePercent, or "
+          + "--maxCacheMemoryUsageMbClass to configure memory thresholds that apply to the "
+          + "grouping table and other cached objects.")
   @Default.Integer(100)
   int getGroupingTableMaxSizeMb();
 
@@ -104,6 +118,10 @@ public interface SdkHarnessOptions extends PipelineOptions {
    * user state.
    *
    * <p>CAUTION: If set too large, SDK harness instances may run into OOM conditions more easily.
+   *
+   * <p>See {@link DefaultMaxCacheMemoryUsageMbFactory} for details on how {@link
+   * #getMaxCacheMemoryUsageMb() maxCacheMemoryUsageMb} is computed if this parameter is
+   * unspecified.
    */
   @Description(
       "The size (in MB) for the process wide cache within the SDK harness. The cache is responsible for "
@@ -116,11 +134,33 @@ public interface SdkHarnessOptions extends PipelineOptions {
   void setMaxCacheMemoryUsageMb(@NonNegative int value);
 
   /**
+   * Size (in % [0 - 100]) for the process wide cache within the SDK harness. The cache is
+   * responsible for storing all values which are cached within a bundle and across bundles such as
+   * side inputs and user state.
+   *
+   * <p>This parameter will only be used if an explicit value was not specified for {@link
+   * #getMaxCacheMemoryUsageMb() maxCacheMemoryUsageMb}.
+   */
+  @Description(
+      "The size (in % [0 - 100]) for the process wide cache within the SDK harness. The cache is responsible for "
+          + "storing all values which are cached within a bundle and across bundles such as side inputs "
+          + "and user state. CAUTION: If set too large, SDK harness instances may run into OOM conditions more easily.")
+  @Default.Float(20)
+  @NonNegative
+  float getMaxCacheMemoryUsagePercent();
+
+  void setMaxCacheMemoryUsagePercent(@NonNegative float value);
+
+  /**
    * An instance of this class will be used to specify the maximum amount of memory to allocate to a
    * cache within an SDK harness instance.
    *
    * <p>This parameter will only be used if an explicit value was not specified for {@link
    * #getMaxCacheMemoryUsageMb() maxCacheMemoryUsageMb}.
+   *
+   * <p>See {@link DefaultMaxCacheMemoryUsageMb} for details on how {@link
+   * #getMaxCacheMemoryUsageMb() maxCacheMemoryUsageMb} is computed if this parameter is
+   * unspecified.
    */
   @Description(
       "An instance of this class will be used to specify the maximum amount of memory to allocate to a "
@@ -131,8 +171,9 @@ public interface SdkHarnessOptions extends PipelineOptions {
   void setMaxCacheMemoryUsageMbClass(Class<? extends MaxCacheMemoryUsageMb> kls);
 
   /**
-   * A {@link DefaultValueFactory} which specifies the maximum amount of memory to allocate to the
-   * process wide cache within an SDK harness instance.
+   * A {@link DefaultValueFactory} which constructs an instance of the class specified by {@link
+   * #getMaxCacheMemoryUsageMbClass maxCacheMemoryUsageMbClass} to compute the maximum amount of
+   * memory to allocate to the process wide cache within an SDK harness instance.
    */
   class DefaultMaxCacheMemoryUsageMbFactory implements DefaultValueFactory<@NonNegative Integer> {
 
@@ -157,14 +198,28 @@ public interface SdkHarnessOptions extends PipelineOptions {
   /**
    * The default implementation which detects how much memory to use for a process wide cache.
    *
-   * <p>TODO(BEAM-13015): Detect the amount of memory to use instead of hard-coding to 100.
+   * <p>If the {@link Runtime} provides a maximum amount of memory (typically specified with {@code
+   * -Xmx} JVM argument), then {@link #getMaxCacheMemoryUsagePercent maxCacheMemoryUsagePercent}
+   * will be used to compute the upper bound as a percentage of the maximum amount of memory.
+   * Otherwise {@code 100} is returned.
    */
   class DefaultMaxCacheMemoryUsageMb implements MaxCacheMemoryUsageMb {
     @Override
     public int getMaxCacheMemoryUsage(PipelineOptions options) {
-      // TODO(BEAM-13015): Detect environment type and produce a value based upon the maximum amount
-      // of memory available.
-      return 100;
+      return getMaxCacheMemoryUsage(options, Runtime.getRuntime().maxMemory());
+    }
+
+    @VisibleForTesting
+    int getMaxCacheMemoryUsage(PipelineOptions options, long maxMemory) {
+      if (maxMemory == Long.MAX_VALUE) {
+        return 100;
+      }
+      float maxPercent = options.as(SdkHarnessOptions.class).getMaxCacheMemoryUsagePercent();
+      if (maxPercent < 0 || maxPercent > 100) {
+        throw new IllegalArgumentException(
+            "--maxCacheMemoryUsagePercent must be between 0 and 100.");
+      }
+      return (int) (maxMemory / 1048576. * maxPercent / 100.);
     }
   }
 
@@ -252,4 +307,22 @@ public interface SdkHarnessOptions extends PipelineOptions {
       return overrides;
     }
   }
+
+  /**
+   * Open modules needed for reflection that access JDK internals with Java 9+
+   *
+   * <p>With JDK 16+, <a href="#{https://openjdk.java.net/jeps/403}">JDK internals are strongly
+   * encapsulated</a> and can result in an InaccessibleObjectException being thrown if a tool or
+   * library uses reflection that access JDK internals. If you see these errors in your worker logs,
+   * you can pass in modules to open using the format module/package=target-module(,target-module)*
+   * to allow access to the library. E.g. java.base/java.lang=jamm
+   *
+   * <p>You may see warnings that jamm, a library used to more accurately size objects, is unable to
+   * make a private field accessible. To resolve the warning, open the specified module/package to
+   * jamm.
+   */
+  @Description("Open modules needed for reflection with Java 17+.")
+  List<String> getJdkAddOpenModules();
+
+  void setJdkAddOpenModules(List<String> options);
 }

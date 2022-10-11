@@ -15,9 +15,39 @@
 
 package utils
 
-import "regexp"
+import (
+	"beam.apache.org/playground/backend/internal/logger"
+	"github.com/google/uuid"
+	"gopkg.in/yaml.v3"
+	"io/ioutil"
+	"regexp"
+)
 
 func ReduceWhiteSpacesToSinge(s string) string {
 	re := regexp.MustCompile(`\s+`)
 	return re.ReplaceAllString(s, " ")
+}
+
+//ReadFile reads from file and returns string.
+func ReadFile(pipelineId uuid.UUID, path string) (string, error) {
+	content, err := ioutil.ReadFile(path)
+	if err != nil {
+		logger.Errorf("%s: ReadFile(): error during reading from a file: %s", pipelineId, err.Error())
+		return "", err
+	}
+	return string(content), nil
+}
+
+//ReadYamlFile reads from a yaml file.
+func ReadYamlFile(filename string, out interface{}) error {
+	buf, err := ioutil.ReadFile(filename)
+	if err != nil {
+		logger.Errorf("ReadYamlFile(): error during reading from a yaml file: %s", err.Error())
+		return err
+	}
+	if err = yaml.Unmarshal(buf, out); err != nil {
+		logger.Errorf("ReadYamlFile(): error during parsing from a yaml file: %s", err.Error())
+		return err
+	}
+	return nil
 }

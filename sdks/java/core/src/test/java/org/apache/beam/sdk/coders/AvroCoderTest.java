@@ -209,6 +209,7 @@ public class AvroCoderTest {
    * Tests that {@link AvroCoder} works around issues in Avro where cache classes might be from the
    * wrong ClassLoader, causing confusing "Cannot cast X to X" error messages.
    */
+  @SuppressWarnings("ReturnValueIgnored")
   @Test
   public void testTwoClassLoaders() throws Exception {
     ClassLoader contextClassLoader = Thread.currentThread().getContextClassLoader();
@@ -248,7 +249,7 @@ public class AvroCoderTest {
 
   /**
    * Confirm that we can serialize and deserialize an AvroCoder object and still decode after.
-   * (BEAM-349).
+   * (https://github.com/apache/beam/issues/18022).
    *
    * @throws Exception
    */

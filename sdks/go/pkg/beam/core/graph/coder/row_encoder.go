@@ -208,7 +208,11 @@ func (b *RowEncoderBuilder) encoderForSingleTypeReflect(t reflect.Type) (typeEnc
 		return typeEncoderFieldReflect{encode: func(rv reflect.Value, w io.Writer) error {
 			return EncodeVarUint64(rv.Uint(), w)
 		}}, nil
-	case reflect.Float32, reflect.Float64:
+	case reflect.Float32:
+		return typeEncoderFieldReflect{encode: func(rv reflect.Value, w io.Writer) error {
+			return EncodeSinglePrecisionFloat(float32(rv.Float()), w)
+		}}, nil
+	case reflect.Float64:
 		return typeEncoderFieldReflect{encode: func(rv reflect.Value, w io.Writer) error {
 			return EncodeDouble(rv.Float(), w)
 		}}, nil
@@ -262,7 +266,7 @@ func (b *RowEncoderBuilder) containerEncoderForType(t reflect.Type) (typeEncoder
 		return typeEncoderFieldReflect{}, err
 	}
 	if t.Kind() == reflect.Ptr {
-		return typeEncoderFieldReflect{encode: containerNilEncoder(encf.encode), addr: encf.addr}, nil
+		return typeEncoderFieldReflect{encode: NullableEncoder(encf.encode), addr: encf.addr}, nil
 	}
 	return encf, nil
 }

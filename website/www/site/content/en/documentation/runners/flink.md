@@ -66,9 +66,9 @@ Please use the switcher below to select the appropriate mode for the Runner:
 <nav class="language-switcher">
   <strong>Adapt for:</strong>
   <ul>
-    <li data-type="language-java">Classic (Java)</li>
-    <li data-type="language-py">Portable (Python)</li>
-    <li data-type="language-portable">Portable (Java/Python/Go)</li>
+    <li data-value="java">Classic (Java)</li>
+    <li data-value="py">Portable (Python)</li>
+    <li data-value="portable">Portable (Java/Python/Go)</li>
   </ul>
 </nav>
 
@@ -93,7 +93,7 @@ from the [compatibility table](#flink-version-compatibility) below. For example:
 {{< highlight java >}}
 <dependency>
   <groupId>org.apache.beam</groupId>
-  <artifactId>beam-runners-flink-1.13</artifactId>
+  <artifactId>beam-runners-flink-1.14</artifactId>
   <version>{{< param release_latest >}}</version>
 </dependency>
 {{< /highlight >}}
@@ -200,6 +200,7 @@ Starting with Beam 2.18.0, pre-built Flink Job Service Docker images are availab
 [Flink 1.11](https://hub.docker.com/r/apache/beam_flink1.11_job_server),
 [Flink 1.12](https://hub.docker.com/r/apache/beam_flink1.12_job_server).
 [Flink 1.13](https://hub.docker.com/r/apache/beam_flink1.13_job_server).
+[Flink 1.14](https://hub.docker.com/r/apache/beam_flink1.14_job_server).
 {{< /paragraph >}}
 
 <!-- TODO(BEAM-10214): Use actual lists here and below. -->
@@ -327,7 +328,24 @@ To find out which version of Flink is compatible with Beam please see the table 
   <th>Artifact Id</th>
 </tr>
 <tr>
-  <td rowspan="3">&ge; 2.31.0</td>
+  <td rowspan="4">&ge; 2.38.0</td>
+  <td>1.14.x <sup>*</sup></td>
+  <td>beam-runners-flink-1.14</td>
+</tr>
+<tr>
+  <td>1.13.x <sup>*</sup></td>
+  <td>beam-runners-flink-1.13</td>
+</tr>
+<tr>
+  <td>1.12.x <sup>*</sup></td>
+  <td>beam-runners-flink-1.12</td>
+</tr>
+<tr>
+  <td>1.11.x <sup>*</sup></td>
+  <td>beam-runners-flink-1.11</td>
+</tr>
+<tr>
+  <td rowspan="3">2.31.0 - 2.37.0</td>
   <td>1.13.x <sup>*</sup></td>
   <td>beam-runners-flink-1.13</td>
 </tr>

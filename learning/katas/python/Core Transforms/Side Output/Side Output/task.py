@@ -14,6 +14,21 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+# beam-playground:
+#   name: SideOutput
+#   description: Task from katas to implement additional output to your ParDo for numbers bigger than 100.
+#   multifile: false
+#   context_line: 31
+#   categories:
+#     - Filtering
+#     - Multiple Outputs
+#   complexity: BASIC
+#   tags:
+#     - transform
+#     - map
+#     - output
+#     - strings
+
 import apache_beam as beam
 from apache_beam import pvalue
 
@@ -41,4 +56,3 @@ with beam.Pipeline() as p:
 
   results[num_below_100_tag] | 'Log numbers <= 100' >> LogElements(prefix='Number <= 100: ')
   results[num_above_100_tag] | 'Log numbers > 100' >> LogElements(prefix='Number > 100: ')
-

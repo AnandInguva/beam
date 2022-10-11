@@ -17,6 +17,21 @@
  */
 package org.apache.beam.examples;
 
+// beam-playground:
+//   name: WordCount
+//   description: An example that counts words in Shakespeare's works.
+//   multifile: false
+//   pipeline_options: --output output.txt
+//   context_line: 95
+//   categories:
+//     - Combiners
+//     - Options
+//     - Quickstart
+//   complexity: MEDIUM
+//   tags:
+//     - count
+//     - strings
+
 import org.apache.beam.examples.common.ExampleUtils;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.TextIO;
@@ -78,7 +93,7 @@ import org.apache.beam.sdk.values.PCollection;
  * --output=[YOUR_LOCAL_FILE | YOUR_OUTPUT_PREFIX]
  * }</pre>
  *
- * <p>The input file defaults to a public data set containing the text of of King Lear, by William
+ * <p>The input file defaults to a public data set containing the text of King Lear, by William
  * Shakespeare. You can override it and choose your own input with {@code --inputFile}.
  */
 public class WordCount {

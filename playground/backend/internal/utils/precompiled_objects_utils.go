@@ -17,23 +17,36 @@ package utils
 
 import (
 	pb "beam.apache.org/playground/backend/internal/api/v1"
-	"beam.apache.org/playground/backend/internal/cloud_bucket"
 )
 
-// PutPrecompiledObjectsToCategory adds categories with precompiled objects to protobuf object
-func PutPrecompiledObjectsToCategory(categoryName string, precompiledObjects *cloud_bucket.PrecompiledObjects, sdkCategory *pb.Categories) {
-	category := pb.Categories_Category{
-		CategoryName:       categoryName,
-		PrecompiledObjects: make([]*pb.PrecompiledObject, 0),
+// FilterCatalog returns the catalog filtered by sdk and categoryName
+func FilterCatalog(catalog []*pb.Categories, sdk pb.Sdk, categoryName string) []*pb.Categories {
+	var result []*pb.Categories
+	if sdk == pb.Sdk_SDK_UNSPECIFIED {
+		result = catalog
+	} else {
+		for _, categoriesSdk := range catalog {
+			if categoriesSdk.Sdk == sdk {
+				result = append(result, categoriesSdk)
+				break
+			}
+		}
 	}
-	for _, object := range *precompiledObjects {
-		category.PrecompiledObjects = append(category.PrecompiledObjects, &pb.PrecompiledObject{
-			CloudPath:       object.CloudPath,
-			Name:            object.Name,
-			Description:     object.Description,
-			Type:            object.Type,
-			PipelineOptions: object.PipelineOptions,
-		})
+	if categoryName == "" {
+		return result
 	}
-	sdkCategory.Categories = append(sdkCategory.Categories, &category)
+	for _, categoriesSdk := range result {
+		foundCategory := false
+		for _, category := range categoriesSdk.Categories {
+			if category.CategoryName == categoryName {
+				categoriesSdk.Categories = []*pb.Categories_Category{category}
+				foundCategory = true
+				break
+			}
+		}
+		if !foundCategory {
+			categoriesSdk.Categories = []*pb.Categories_Category{}
+		}
+	}
+	return result
 }

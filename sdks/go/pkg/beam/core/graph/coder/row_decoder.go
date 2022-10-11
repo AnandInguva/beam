@@ -23,7 +23,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/internal/errors"
 )
 
-// RowDecoderBuilder allows one to build Beam Schema row encoders for provided types.
+// RowDecoderBuilder allows one to build Beam Schema row decoder for provided types.
 type RowDecoderBuilder struct {
 	allFuncs   map[reflect.Type]decoderProvider
 	ifaceFuncs []reflect.Type
@@ -241,6 +241,15 @@ func reflectDecodeUint(rv reflect.Value, r io.Reader) error {
 	return nil
 }
 
+func reflectDecodeSinglePrecisionFloat(rv reflect.Value, r io.Reader) error {
+	v, err := DecodeSinglePrecisionFloat(r)
+	if err != nil {
+		return errors.Wrap(err, "error decoding single-precision float field")
+	}
+	rv.SetFloat(float64(v))
+	return nil
+}
+
 func reflectDecodeFloat(rv reflect.Value, r io.Reader) error {
 	v, err := DecodeDouble(r)
 	if err != nil {
@@ -336,7 +345,9 @@ func (b *RowDecoderBuilder) decoderForSingleTypeReflect(t reflect.Type) (typeDec
 		return typeDecoderFieldReflect{decode: reflectDecodeInt}, nil
 	case reflect.Uint, reflect.Uint64, reflect.Uint32, reflect.Uint16:
 		return typeDecoderFieldReflect{decode: reflectDecodeUint}, nil
-	case reflect.Float32, reflect.Float64:
+	case reflect.Float32:
+		return typeDecoderFieldReflect{decode: reflectDecodeSinglePrecisionFloat}, nil
+	case reflect.Float64:
 		return typeDecoderFieldReflect{decode: reflectDecodeFloat}, nil
 	case reflect.Ptr:
 		decf, err := b.decoderForSingleTypeReflect(t.Elem())
@@ -386,7 +397,7 @@ func (b *RowDecoderBuilder) containerDecoderForType(t reflect.Type) (typeDecoder
 		return typeDecoderFieldReflect{}, err
 	}
 	if t.Kind() == reflect.Ptr {
-		return typeDecoderFieldReflect{decode: containerNilDecoder(dec.decode), addr: dec.addr}, nil
+		return typeDecoderFieldReflect{decode: NullableDecoder(dec.decode), addr: dec.addr}, nil
 	}
 	return dec, nil
 }

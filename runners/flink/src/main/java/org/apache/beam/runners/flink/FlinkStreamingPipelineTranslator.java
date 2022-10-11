@@ -21,13 +21,13 @@ import static org.apache.beam.runners.core.construction.PTransformTranslation.WR
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.time.Duration;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import org.apache.beam.runners.core.construction.PTransformReplacements;
 import org.apache.beam.runners.core.construction.PTransformTranslation;
 import org.apache.beam.runners.core.construction.ReplacementOutputs;
@@ -69,8 +69,8 @@ import org.slf4j.LoggerFactory;
  * org.apache.flink.streaming.api.datastream.DataStream} one.
  */
 @SuppressWarnings({
-  "rawtypes", // TODO(https://issues.apache.org/jira/browse/BEAM-10556)
-  "nullness" // TODO(https://issues.apache.org/jira/browse/BEAM-10402)
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
 })
 class FlinkStreamingPipelineTranslator extends FlinkPipelineTranslator {
 
@@ -368,7 +368,7 @@ class FlinkStreamingPipelineTranslator extends FlinkPipelineTranslator {
         cache =
             CacheBuilder.newBuilder()
                 .maximumSize(CACHE_MAX_SIZE)
-                .expireAfterAccess(Duration.ofSeconds(CACHE_EXPIRE_SECONDS))
+                .expireAfterAccess(CACHE_EXPIRE_SECONDS, TimeUnit.SECONDS)
                 .build();
       }
 

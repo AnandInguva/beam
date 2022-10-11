@@ -121,8 +121,9 @@ class SubprocessServer(object):
       def log_stdout():
         line = self._process.stdout.readline()
         while line:
-          # Remove newline via rstrip() to not print an empty line
-          _LOGGER.info(line.rstrip())
+          # The log obtained from stdout is bytes, decode it into string.
+          # Remove newline via rstrip() to not print an empty line.
+          _LOGGER.info(line.decode(errors='backslashreplace').rstrip())
           line = self._process.stdout.readline()
 
       t = threading.Thread(target=log_stdout)
@@ -153,7 +154,7 @@ class SubprocessServer(object):
 
 class JavaJarServer(SubprocessServer):
 
-  APACHE_REPOSITORY = 'https://repo.maven.apache.org/maven2'
+  MAVEN_CENTRAL_REPOSITORY = 'https://repo.maven.apache.org/maven2'
   BEAM_GROUP_ID = 'org.apache.beam'
   JAR_CACHE = os.path.expanduser("~/.apache_beam/cache/jars")
 
@@ -198,7 +199,7 @@ class JavaJarServer(SubprocessServer):
       artifact_id,
       group_id,
       version,
-      repository=APACHE_REPOSITORY,
+      repository=MAVEN_CENTRAL_REPOSITORY,
       classifier=None,
       appendix=None):
     return '/'.join([
@@ -249,7 +250,7 @@ class JavaJarServer(SubprocessServer):
           artifact_id,
           cls.BEAM_GROUP_ID,
           version,
-          cls.APACHE_REPOSITORY,
+          cls.MAVEN_CENTRAL_REPOSITORY,
           appendix=appendix)
 
   @classmethod
@@ -324,7 +325,7 @@ class JavaJarServer(SubprocessServer):
           manifest.write(b'Manifest-Version: 1.0\n')
           manifest.write(main_class)
           manifest.write(
-              b'Class-Path: ' + ' '.join(classpath).encode('ascii') + b'\n')
+              b'Class-Path: ' + '\n  '.join(classpath).encode('ascii') + b'\n')
       os.rename(composite_jar + '.tmp', composite_jar)
     return composite_jar
 

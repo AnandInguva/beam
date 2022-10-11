@@ -17,20 +17,27 @@
  */
 
 import 'package:flutter/material.dart';
-import 'package:playground/modules/editor/components/editor_textarea.dart';
-import 'package:playground/pages/playground/states/playground_state.dart';
+import 'package:playground_components/playground_components.dart';
 import 'package:provider/provider.dart';
 
 class EmbeddedEditor extends StatelessWidget {
-  const EmbeddedEditor({Key? key}) : super(key: key);
+  final bool isEditable;
+
+  const EmbeddedEditor({Key? key, required this.isEditable}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
-    final state = Provider.of<PlaygroundState>(context);
-    return EditorTextArea(
-      enabled: true,
-      sdk: state.sdk,
-      example: state.selectedExample,
+    final controller = Provider.of<PlaygroundController>(context);
+    final snippetController = controller.snippetEditingController;
+
+    if (snippetController == null) {
+      return const LoadingIndicator();
+    }
+
+    return SnippetEditor(
+      controller: snippetController,
+      isEditable: isEditable,
+      goToContextLine: false,
     );
   }
 }

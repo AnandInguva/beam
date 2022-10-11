@@ -18,8 +18,8 @@
 package org.apache.beam.runners.dataflow.worker.util.common.worker;
 
 import java.io.IOException;
-import java.time.Duration;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.annotations.VisibleForTesting;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Objects;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Throwables;
@@ -30,7 +30,7 @@ import org.checkerframework.checker.nullness.qual.Nullable;
 
 /** A {@link ShuffleBatchReader} that caches batches as they're read. */
 @SuppressWarnings({
-  "nullness" // TODO(https://issues.apache.org/jira/browse/BEAM-10402)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
 })
 public class CachingShuffleBatchReader implements ShuffleBatchReader {
   private final ShuffleBatchReader reader;
@@ -49,7 +49,7 @@ public class CachingShuffleBatchReader implements ShuffleBatchReader {
     this.cache =
         CacheBuilder.newBuilder()
             .maximumSize(maximumBatches)
-            .expireAfterAccess(Duration.ofMillis(expireAfterAccessMillis))
+            .expireAfterAccess(expireAfterAccessMillis, TimeUnit.MILLISECONDS)
             .<BatchRange, Batch>build(
                 new CacheLoader<BatchRange, Batch>() {
                   @Override

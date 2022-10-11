@@ -79,8 +79,8 @@ import org.joda.time.Instant;
  * portable api to Samza {@link DoFnOp}.
  */
 @SuppressWarnings({
-  "rawtypes", // TODO(https://issues.apache.org/jira/browse/BEAM-10556)
-  "nullness" // TODO(https://issues.apache.org/jira/browse/BEAM-10402)
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
 })
 class ParDoBoundMultiTranslator<InT, OutT>
     implements TransformTranslator<ParDo.MultiOutput<InT, OutT>>,
@@ -194,7 +194,7 @@ class ParDoBoundMultiTranslator<InT, OutT>
     }
 
     final MessageStream<OpMessage<RawUnionValue>> taggedOutputStream =
-        mergedStreams.flatMapAsync(OpAdapter.adapt(op));
+        mergedStreams.flatMapAsync(OpAdapter.adapt(op, ctx));
 
     for (int outputIndex : tagToIndexMap.values()) {
       @SuppressWarnings("unchecked")
@@ -204,7 +204,7 @@ class ParDoBoundMultiTranslator<InT, OutT>
                   message ->
                       message.getType() != OpMessage.Type.ELEMENT
                           || message.getElement().getValue().getUnionTag() == outputIndex)
-              .flatMapAsync(OpAdapter.adapt(new RawUnionValueToValue()));
+              .flatMapAsync(OpAdapter.adapt(new RawUnionValueToValue(), ctx));
 
       ctx.registerMessageStream(indexToPCollectionMap.get(outputIndex), outputStream);
     }
@@ -345,7 +345,7 @@ class ParDoBoundMultiTranslator<InT, OutT>
     }
 
     final MessageStream<OpMessage<RawUnionValue>> taggedOutputStream =
-        mergedStreams.flatMapAsync(OpAdapter.adapt(op));
+        mergedStreams.flatMapAsync(OpAdapter.adapt(op, ctx));
 
     for (int outputIndex : tagToIndexMap.values()) {
       @SuppressWarnings("unchecked")
@@ -355,7 +355,7 @@ class ParDoBoundMultiTranslator<InT, OutT>
                   message ->
                       message.getType() != OpMessage.Type.ELEMENT
                           || message.getElement().getValue().getUnionTag() == outputIndex)
-              .flatMapAsync(OpAdapter.adapt(new RawUnionValueToValue()));
+              .flatMapAsync(OpAdapter.adapt(new RawUnionValueToValue(), ctx));
 
       ctx.registerMessageStream(indexToIdMap.get(outputIndex), outputStream);
     }
@@ -510,7 +510,7 @@ class ParDoBoundMultiTranslator<InT, OutT>
             coder.withValueCoder(IterableCoder.of(coder.getValueCoder())),
             ctx.getTransformId(),
             getSideInputUniqueId(sideInputId),
-            ctx.getSamzaPipelineOptions());
+            ctx.getPipelineOptions());
 
     return broadcastSideInput;
   }

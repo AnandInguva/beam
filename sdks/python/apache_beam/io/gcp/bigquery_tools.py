@@ -32,7 +32,6 @@ import decimal
 import io
 import json
 import logging
-import re
 import sys
 import time
 import uuid
@@ -42,7 +41,9 @@ from typing import TypeVar
 from typing import Union
 
 import fastavro
+import regex
 
+import apache_beam
 from apache_beam import coders
 from apache_beam.internal.gcp import auth
 from apache_beam.internal.gcp.json_value import from_json_value
@@ -52,7 +53,6 @@ from apache_beam.internal.metrics.metric import Metrics
 from apache_beam.internal.metrics.metric import ServiceCallMetric
 from apache_beam.io.gcp import bigquery_avro_tools
 from apache_beam.io.gcp import resource_identifiers
-from apache_beam.io.gcp.bigquery_io_metadata import create_bigquery_io_metadata
 from apache_beam.io.gcp.internal.clients import bigquery
 from apache_beam.metrics import monitoring_infos
 from apache_beam.options import value_provider
@@ -69,6 +69,7 @@ try:
   from apitools.base.py.transfer import Upload
   from apitools.base.py.exceptions import HttpError, HttpForbiddenError
   from google.api_core.exceptions import ClientError, GoogleAPICallError
+  from google.api_core.client_info import ClientInfo
   from google.cloud import bigquery as gcp_bigquery
 except ImportError:
   gcp_bigquery = None
@@ -98,6 +99,10 @@ UNKNOWN_MIME_TYPE = 'application/octet-stream'
 
 # Timeout for a BQ streaming insert RPC. Set to a maximum of 2 minutes.
 BQ_STREAMING_INSERT_TIMEOUT_SEC = 120
+
+_PROJECT_PATTERN = r'([a-z0-9.-]+:)?[a-z][a-z0-9-]*[a-z0-9]'
+_DATASET_PATTERN = r'\w{1,1024}'
+_TABLE_PATTERN = r'[\p{L}\p{M}\p{N}\p{Pc}\p{Pd}\p{Zs}$]{1,1024}'
 
 
 class FileFormat(object):
@@ -252,8 +257,10 @@ def parse_table_reference(table, dataset=None, project=None):
   # table argument will contain a full table reference instead of just a
   # table name.
   if dataset is None:
-    match = re.match(
-        r'^((?P<project>.+):)?(?P<dataset>\w+)\.(?P<table>[-\w\$]+)$', table)
+    pattern = (
+        f'((?P<project>{_PROJECT_PATTERN})[:\\.])?'
+        f'(?P<dataset>{_DATASET_PATTERN})\\.(?P<table>{_TABLE_PATTERN})')
+    match = regex.fullmatch(pattern, table)
     if not match:
       raise ValueError(
           'Expected a table reference (PROJECT:DATASET.TABLE or '
@@ -312,7 +319,7 @@ class BigQueryWrapper(object):
 
   The wrapper is used to organize all the BigQuery integration points and
   offer a common place where retry logic for failures can be controlled.
-  In addition it offers various functions used both in sources and sinks
+  In addition, it offers various functions used both in sources and sinks
   (e.g., find and create tables, query a table, etc.).
   """
 
@@ -326,9 +333,14 @@ class BigQueryWrapper(object):
   def __init__(self, client=None, temp_dataset_id=None, temp_table_ref=None):
     self.client = client or bigquery.BigqueryV2(
         http=get_new_http(),
-        credentials=auth.get_service_credentials(),
-        response_encoding='utf8')
-    self.gcp_bq_client = client or gcp_bigquery.Client()
+        credentials=auth.get_service_credentials(None),
+        response_encoding='utf8',
+        additional_http_headers={
+            "user-agent": "apache-beam-%s" % apache_beam.__version__
+        })
+    self.gcp_bq_client = client or gcp_bigquery.Client(
+        client_info=ClientInfo(
+            user_agent="apache-beam-%s" % apache_beam.__version__))
     self._unique_row_id = 0
     # For testing scenarios where we pass in a client we do not want a
     # randomized prefix for row IDs.
@@ -495,10 +507,9 @@ class BigQueryWrapper(object):
       job_labels=None):
 
     if not source_uris and not source_stream:
-      raise ValueError(
-          'Either a non-empty list of fully-qualified source URIs must be '
-          'provided via the source_uris parameter or an open file object must '
-          'be provided via the source_stream parameter. Got neither.')
+      _LOGGER.warning(
+          'Both source URIs and source stream are not provided. BigQuery load '
+          'job will not load any data.')
 
     if source_uris and source_stream:
       raise ValueError(
@@ -707,8 +718,8 @@ class BigQueryWrapper(object):
         for insert_error in errors:
           service_call_metric.call(insert_error['errors'][0])
     except (ClientError, GoogleAPICallError) as e:
-      # e.code.value contains the numeric http status code.
-      service_call_metric.call(e.code.value)
+      # e.code contains the numeric http status code.
+      service_call_metric.call(e.code)
       # Re-reise the exception so that we re-try appropriately.
       raise
     except HttpError as e:
@@ -750,12 +761,10 @@ class BigQueryWrapper(object):
       schema,
       additional_parameters=None):
 
-    valid_tablename = re.match(r'^[\w]{1,1024}$', table_id, re.ASCII)
+    valid_tablename = regex.fullmatch(_TABLE_PATTERN, table_id, regex.ASCII)
     if not valid_tablename:
       raise ValueError(
           'Invalid BigQuery table name: %s \n'
-          'A table name in BigQuery must contain only letters (a-z, A-Z), '
-          'numbers (0-9), or underscores (_) and be up to 1024 characters:\n'
           'See https://cloud.google.com/bigquery/docs/tables#table_naming' %
           table_id)
 
@@ -995,17 +1004,6 @@ class BigQueryWrapper(object):
     Returns:
       bigquery.JobReference with the information about the job that was started.
     """
-    if not source_uris and not source_stream:
-      raise ValueError(
-          'Either a non-empty list of fully-qualified source URIs must be '
-          'provided via the source_uris parameter or an open file object must '
-          'be provided via the source_stream parameter. Got neither.')
-
-    if source_uris and source_stream:
-      raise ValueError(
-          'Only one of source_uris and source_stream may be specified. '
-          'Got both.')
-
     project_id = (
         destination.projectId
         if load_job_project_id is None else load_job_project_id)
@@ -1243,7 +1241,7 @@ class BigQueryWrapper(object):
 
     Returns:
       A tuple (bool, errors). If first element is False then the second element
-      will be a bigquery.InserttErrorsValueListEntry instance containing
+      will be a bigquery.InsertErrorsValueListEntry instance containing
       specific errors.
     """
 
@@ -1343,126 +1341,7 @@ class BigQueryWrapper(object):
 
 
 # -----------------------------------------------------------------------------
-# BigQueryReader, BigQueryWriter.
-
-
-class BigQueryReader(dataflow_io.NativeSourceReader):
-  """A reader for a BigQuery source."""
-  def __init__(
-      self,
-      source,
-      test_bigquery_client=None,
-      use_legacy_sql=True,
-      flatten_results=True,
-      kms_key=None,
-      query_priority=None):
-    self.source = source
-    self.test_bigquery_client = test_bigquery_client
-    if auth.is_running_in_gce:
-      self.executing_project = auth.executing_project
-    elif hasattr(source, 'pipeline_options'):
-      self.executing_project = (
-          source.pipeline_options.view_as(GoogleCloudOptions).project)
-    else:
-      self.executing_project = None
-
-    # TODO(silviuc): Try to automatically get it from gcloud config info.
-    if not self.executing_project and test_bigquery_client is None:
-      raise RuntimeError(
-          'Missing executing project information. Please use the --project '
-          'command line option to specify it.')
-    self.row_as_dict = isinstance(self.source.coder, RowAsDictJsonCoder)
-    # Schema for the rows being read by the reader. It is initialized the
-    # first time something gets read from the table. It is not required
-    # for reading the field values in each row but could be useful for
-    # getting additional details.
-    self.schema = None
-    self.use_legacy_sql = use_legacy_sql
-    self.flatten_results = flatten_results
-    self.kms_key = kms_key
-    self.bigquery_job_labels = {}
-    self.bq_io_metadata = None
-
-    from apache_beam.io.gcp.bigquery import BigQueryQueryPriority
-    self.query_priority = query_priority or BigQueryQueryPriority.BATCH
-
-    if self.source.table_reference is not None:
-      # If table schema did not define a project we default to executing
-      # project.
-      project_id = self.source.table_reference.projectId
-      if not project_id:
-        project_id = self.executing_project
-      self.query = 'SELECT * FROM [%s:%s.%s];' % (
-          project_id,
-          self.source.table_reference.datasetId,
-          self.source.table_reference.tableId)
-    elif self.source.query is not None:
-      self.query = self.source.query
-    else:
-      # Enforce the "modes" enforced by BigQuerySource.__init__.
-      # If this exception has been raised, the BigQuerySource "modes" have
-      # changed and this method will need to be updated as well.
-      raise ValueError("BigQuerySource must have either a table or query")
-
-  def _get_source_location(self):
-    """
-    Get the source location (e.g. ``"EU"`` or ``"US"``) from either
-
-    - :data:`source.table_reference`
-      or
-    - The first referenced table in :data:`source.query`
-
-    See Also:
-      - :meth:`BigQueryWrapper.get_query_location`
-      - :meth:`BigQueryWrapper.get_table_location`
-
-    Returns:
-      Optional[str]: The source location, if any.
-    """
-    if self.source.table_reference is not None:
-      tr = self.source.table_reference
-      return self.client.get_table_location(
-          tr.projectId if tr.projectId is not None else self.executing_project,
-          tr.datasetId,
-          tr.tableId)
-    else:  # It's a query source
-      return self.client.get_query_location(
-          self.executing_project, self.source.query, self.source.use_legacy_sql)
-
-  def __enter__(self):
-    self.client = BigQueryWrapper(client=self.test_bigquery_client)
-    if not self.client.is_user_configured_dataset():
-      # Temp dataset was provided by the user so we do not have to create one.
-      self.client.create_temporary_dataset(
-          self.executing_project, location=self._get_source_location())
-    return self
-
-  def __exit__(self, exception_type, exception_value, traceback):
-    self.client.clean_up_temporary_dataset(self.executing_project)
-
-  def __iter__(self):
-    if not self.bq_io_metadata:
-      self.bq_io_metadata = create_bigquery_io_metadata()
-    for rows, schema in self.client.run_query(
-        project_id=self.executing_project, query=self.query,
-        use_legacy_sql=self.use_legacy_sql,
-        flatten_results=self.flatten_results,
-        priority=self.query_priority,
-        job_labels=self.bq_io_metadata.add_additional_bq_job_labels(
-            self.bigquery_job_labels)):
-      if self.schema is None:
-        self.schema = schema
-      for row in rows:
-        # return base64 encoded bytes as byte type on python 3
-        # which matches the behavior of Beam Java SDK
-        for i in range(len(row.f)):
-          if self.schema.fields[i].type == 'BYTES' and row.f[i].v:
-            row.f[i].v.string_value = row.f[i].v.string_value.encode('utf-8')
-
-        if self.row_as_dict:
-          yield self.client.convert_row_to_dict(row, schema)
-        else:
-          yield row
+# BigQueryWriter.
 
 
 class BigQueryWriter(dataflow_io.NativeSinkWriter):
@@ -1539,7 +1418,10 @@ class RowAsDictJsonCoder(coders.Coder):
     # to the programmer that they have used NAN/INF values.
     try:
       return json.dumps(
-          table_row, allow_nan=False, default=default_encoder).encode('utf-8')
+          table_row,
+          allow_nan=False,
+          ensure_ascii=False,
+          default=default_encoder).encode('utf-8')
     except ValueError as e:
       raise ValueError(
           '%s. %s. Row: %r' % (e, JSON_COMPLIANCE_ERROR, table_row))
