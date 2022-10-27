@@ -21,6 +21,7 @@ TensorFlow.
 
 import argparse
 import io
+import logging
 import os
 from typing import Iterable
 from typing import Optional
@@ -156,6 +157,7 @@ def preprocess_image(image: Image.Image) -> np.ndarray:
   image = image.resize(
       ssd_mobilenet_v2_320x320_input_dims, resample=Image.BILINEAR)
   image = np.asarray(image, dtype=np.uint8)
+  logging.info(tf.config.list_physical_devices())
   return image
 
 
@@ -296,4 +298,5 @@ def run(argv=None, save_main_session=True):
 
 
 if __name__ == '__main__':
+  logging.getLogger().setLevel(logging.INFO)
   run()
