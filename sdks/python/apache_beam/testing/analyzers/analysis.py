@@ -289,7 +289,6 @@ class RunChangePointAnalysis:
     return True
 
   def run(self, file_path):
-    test_name = sys.argv[0]
     with open(file_path, 'r') as stream:
       config = yaml.safe_load(stream)
     metric_name = config['metric_name']
@@ -328,10 +327,12 @@ class RunChangePointAnalysis:
               labels=GH_ISSUE_LABELS)
 
           bq_metrics_publisher = BigQueryMetricsPublisher(
-              project_name=BQ_PROJECT_NAME, dataset=BQ_DATASET, table=test_name)
+              project_name=BQ_PROJECT_NAME,
+              dataset=BQ_DATASET,
+              table=self.test_name)
           metric_dict = Metric(
               submit_timestamp=time.time(),
-              test_name=test_name,
+              test_name=self.test_name,
               metric_name=metric_name,
               test_id=uuid.uuid4().hex,
               change_point=metric_values[
