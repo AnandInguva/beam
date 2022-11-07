@@ -26,7 +26,7 @@ on:
 jobs:
 
   install_dependencies:
-    name: Install dependencies
+    name: Run Change Point Analysis.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -41,12 +41,11 @@ jobs:
         run: pip install google-cloud-bigquery
       - name: Install Pandas
         run: pip install pandas
-
-  change_point_analysis:
-    name: Python Change Point Analysis
-    runs-on: ubuntu-latest
-    needs:
-      - instal_dependencies
-    working-directory: ./sdks/python
-    run: python apache_beam/testing/analyzers/analysis.py --change_point_sibling_distance=10 --changepoint_to_recent_run_window=10
+      - name: Run Change Point Analysis.
+        working-directory: ./sdks/python/apache_beam/testing/analyzers
+        shell: bash
+        run: |
+        python analysis.py \
+        --change_point_sibling_distance=10 \
+        --changepoint_to_recent_run_window=10
 
