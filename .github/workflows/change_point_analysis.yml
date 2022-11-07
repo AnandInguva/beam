@@ -22,6 +22,9 @@ name: Change Point Analyzer
 on:
   schedule:
     - cron: '5 * * * *' # TODO: Change the window of the cron job.
+  pull_request:
+    branches:
+      - master
 
 jobs:
 
@@ -44,8 +47,5 @@ jobs:
       - name: Run Change Point Analysis.
         working-directory: ./sdks/python/apache_beam/testing/analyzers
         shell: bash
-        run: |
-        python analysis.py \
-        --change_point_sibling_distance=10 \
-        --changepoint_to_recent_run_window=10
+        run: python analysis.py --change_point_sibling_distance=10 --changepoint_to_recent_run_window=10
 
