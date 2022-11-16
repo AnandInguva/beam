@@ -15,6 +15,7 @@
 # limitations under the License.
 #
 import json
+import logging
 import os
 from typing import List
 from typing import Optional
@@ -23,13 +24,14 @@ from typing import Tuple
 import requests
 
 try:
-  _GITHUB_TOKEN = os.environ['_GITHUB_TOKEN']
+  _GITHUB_TOKEN = os.environ['GITHUB_TOKEN']
 except KeyError as e:
-  raise Exception(
-      '{} + A Github Personal Access token is required '
-      'to create Github Issues.'.format(e))
+  _GITHUB_TOKEN = None
+  logging.warning(
+      'A Github Personal Access token is required '
+      'to create Github Issues.')
 
-_BEAM_REPO_OWNER = 'apache'
+_BEAM_REPO_OWNER = 'AnandInguva'
 _BEAM_REPO_NAME = 'beam'
 _HEADERS = {
     "Authorization": 'token {}'.format(_GITHUB_TOKEN),

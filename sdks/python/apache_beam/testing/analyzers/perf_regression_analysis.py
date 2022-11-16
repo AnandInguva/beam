@@ -31,10 +31,9 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from apache_beam.testing.load_tests import load_test_metrics_utils
 from apache_beam.testing.analyzers.github_issues_utils import create_or_comment_issue
 from apache_beam.testing.analyzers.github_issues_utils import get_issue_description
-
+from apache_beam.testing.load_tests import load_test_metrics_utils
 from apache_beam.testing.load_tests.load_test_metrics_utils import BigQueryMetricsPublisher
 from apache_beam.testing.load_tests.load_test_metrics_utils import FetchMetrics
 from signal_processing_algorithms.energy_statistics.energy_statistics import e_divisive
@@ -243,7 +242,7 @@ def read_test_config(config_file_path: str) -> Dict:
 
 def run(args) -> None:
   """
-  run method is the entry point to run change point analysis on test metric
+  run is the entry point to run change point analysis on test metric
   data, which is read from config file, and if there is a performance
   regression observed for a test, an alert will filed with GitHub Issues.
 
@@ -352,7 +351,7 @@ def run(args) -> None:
           max_results_to_display=NUM_RESULTS_TO_DISPLAY_ON_ISSUE_DESCRIPTION)
 
       issue_number, issue_url = create_or_comment_issue(
-        title=TITLE_TEMPLATE.format(test_name. metric_name),
+        title=TITLE_TEMPLATE.format(test_name, metric_name),
         description=issue_description,
         labels=labels,
         issue_number=last_created_issue_number
@@ -379,9 +378,7 @@ def run(args) -> None:
           dataset=_BQ_DATASET,
           table=test_name,
           bq_schema=SCHEMA)
-      # Add a small delay once the table is created
-      #   https://github.com/googleapis/google-cloud-go/issues/975
-      time.sleep(30)
+
       bq_metrics_publisher.publish([issue_meta_data_dict])
       logging.info(
           'GitHub metadata is published to Big Query Dataset %s'
