@@ -23,16 +23,16 @@ from typing import Tuple
 import requests
 
 try:
-  GITHUB_TOKEN = os.environ['GITHUB_TOKEN']
+  _GITHUB_TOKEN = os.environ['_GITHUB_TOKEN']
 except KeyError as e:
   raise Exception(
       '{} + A Github Personal Access token is required '
       'to create Github Issues.'.format(e))
 
-BEAM_REPO_OWNER = 'apache'
-BEAM_REPO_NAME = 'beam'
-HEADERS = {
-    "Authorization": 'token {}'.format(GITHUB_TOKEN),
+_BEAM_REPO_OWNER = 'apache'
+_BEAM_REPO_NAME = 'beam'
+_HEADERS = {
+    "Authorization": 'token {}'.format(_GITHUB_TOKEN),
     "Accept": "application/vnd.github+json"
 }
 
@@ -44,8 +44,8 @@ _METRIC_INFO = "timestamp: {}, metric_value: `{}`"
 
 
 def create_or_comment_issue(
-    title,
-    description,
+    title: str,
+    description: str,
     labels: Optional[List] = None,
     issue_number: Optional[int] = None) -> Tuple[int, str]:
   """
@@ -69,22 +69,22 @@ def create_or_comment_issue(
   # Issue number was not provided or issue with provided number
   # is closed. In that case, create a new issue.
   url = "https://api.github.com/repos/{}/{}/issues".format(
-      BEAM_REPO_OWNER, BEAM_REPO_NAME)
+      _BEAM_REPO_OWNER, _BEAM_REPO_NAME)
   data = {
-      'owner': BEAM_REPO_OWNER,
-      'repo': BEAM_REPO_NAME,
+      'owner': _BEAM_REPO_OWNER,
+      'repo': _BEAM_REPO_NAME,
       'title': title,
       'body': description,
   }
   if labels:
     data['labels'] = labels
   response = requests.post(
-      url=url, data=json.dumps(data), headers=HEADERS).json()
+      url=url, data=json.dumps(data), headers=_HEADERS).json()
   return response['number'], response['html_url']
 
 
-def comment_on_issue(issue_number,
-                     comment_description) -> Tuple[bool, Optional[str]]:
+def comment_on_issue(issue_number: int,
+                     comment_description: str) -> Tuple[bool, Optional[str]]:
   """
   This method looks for an issue with provided issue_number. If an open
   issue is found, comment on the open issue with provided description else
@@ -96,26 +96,26 @@ def comment_on_issue(issue_number,
       then comment on the issue with the using comment_description.
   """
   url = 'https://api.github.com/repos/{}/{}/issues/{}'.format(
-      BEAM_REPO_OWNER, BEAM_REPO_NAME, issue_number)
+      _BEAM_REPO_OWNER, _BEAM_REPO_NAME, issue_number)
   open_issue_response = requests.get(
       url,
       json.dumps({
-          'owner': BEAM_REPO_OWNER,
-          'repo': BEAM_REPO_NAME,
+          'owner': _BEAM_REPO_OWNER,
+          'repo': _BEAM_REPO_NAME,
           'issue_number': issue_number
       }),
-      headers=HEADERS)
+      headers=_HEADERS)
   status_code = open_issue_response.status_code
   open_issue_response = open_issue_response.json()
   if status_code == 200 and open_issue_response['state'] == 'open':
     data = {
-        'owner': BEAM_REPO_OWNER,
-        'repo': BEAM_REPO_NAME,
+        'owner': _BEAM_REPO_OWNER,
+        'repo': _BEAM_REPO_NAME,
         'body': comment_description,
         issue_number: issue_number,
     }
     response = requests.post(
-        open_issue_response['comments_url'], json.dumps(data), headers=HEADERS)
+        open_issue_response['comments_url'], json.dumps(data), headers=_HEADERS)
     return True, response.json()['html_url']
 
   return False, None
