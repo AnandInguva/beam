@@ -26,7 +26,7 @@ test_1:
   change_point_sibling_distance: 10
   # the test runs once per day. So alert only if a perf regression lies
   # in the last 7 runs/days from the recent run.
-  changepoint_to_recent_run_window: 7
+  change_point_to_recent_run_window: 7
 
 
 test_2:
@@ -41,4 +41,4 @@ test_2:
   change_point_sibling_distance: 10
     # the test runs once per day. So alert only if a perf regression lies
     # in the last 7 runs/days from the recent run.
-  changepoint_to_recent_run_window: 7
+  change_point_to_recent_run_window: 7
