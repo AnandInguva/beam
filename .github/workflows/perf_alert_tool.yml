@@ -21,7 +21,7 @@ name: Run performance alerting tool on Python load/performance/benchmark tests.
 
 on:
   schedule:
-    - cron: '5 22 * * *'
+    - cron: '* * * * *'
 
 jobs:
   python_run_change_point_analysis:
