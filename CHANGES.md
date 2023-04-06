@@ -54,8 +54,7 @@
 
 ## Highlights
 
-* New highly anticipated feature X added to Python SDK ([#X](https://github.com/apache/beam/issues/X)).
-* New highly anticipated feature Y added to Java SDK ([#Y](https://github.com/apache/beam/issues/Y)).
+* Apache Beam adds Python 3.11 support ([#23848](https://github.com/apache/beam/issues/23848)).
 
 ## I/Os
 
@@ -63,6 +62,7 @@
 * BigQuery Storage Write API is now available in Python SDK via cross-language ([#21961](https://github.com/apache/beam/issues/21961)).
 * Added HbaseIO support for writing RowMutations (ordered by rowkey) to Hbase (Java) ([#25830](https://github.com/apache/beam/issues/25830)).
 * Added fileio transforms MatchFiles, MatchAll and ReadMatches (Go) ([#25779](https://github.com/apache/beam/issues/25779)).
+* Add integration test for JmsIO + fix issue with multiple connections (Java) ([#25887](https://github.com/apache/beam/issues/25887)).
 
 ## New Features / Improvements
 
@@ -135,6 +135,10 @@
   fixed cost in this computation to better handle cases where the fixed cost
   is larger than a single second. To get the old behavior, one can pass
   `target_batch_duration_secs_including_fixed_cost=1` to BatchElements.
+* Dataflow runner enables sibling SDK protocol for Python pipelines using custom containers on Beam 2.46.0 and newer SDKs.
+  If your Python pipeline starts to stall after you switch to 2.46.0 and you use a custom container, please verify
+  that your custom container does not include artifacts from older Beam SDK releases. In particular, check in your `Dockerfile`
+  that the Beam container entrypoint and/or Beam base image version match the Beam SDK version used at job submission.
 
 ## Deprecations
 

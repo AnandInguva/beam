@@ -16,29 +16,14 @@
  * limitations under the License.
  */
 
-import PrecommitJobBuilder
+/**
+ * Classes related to estimating the throughput of the change streams SDFs. This is initially copied
+ * from the Spanner change streams implementation. They are currently separate since both features
+ * are under active development and may diverge
+ */
+@Internal
+@Experimental
+package org.apache.beam.sdk.io.gcp.bigtable.changestreams.estimator;
 
-PrecommitJobBuilder builder = new PrecommitJobBuilder(
-    scope: this,
-    nameBase: 'Java_JDBC_IO_Direct',
-    gradleTasks: [
-      ':sdks:java:io:jdbc:build',
-      ':sdks:java:io:jdbc:integrationTest',
-    ],
-    gradleSwitches: [
-      '-PdisableSpotlessCheck=true',
-      '-PdisableCheckStyle=true'
-    ], // spotless checked in separate pre-commit
-    triggerPathPatterns: [
-      '^sdks/java/core/src/main/.*$',
-      '^sdks/java/testing/test-utils/.*$',
-      '^sdks/java/io/common/.*$',
-      '^sdks/java/io/jdbc/.*$',
-    ],
-    timeoutMins: 60,
-    )
-builder.build {
-  publishers {
-    archiveJunit('**/build/test-results/**/*.xml')
-  }
-}
+import org.apache.beam.sdk.annotations.Experimental;
+import org.apache.beam.sdk.annotations.Internal;

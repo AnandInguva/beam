@@ -15,29 +15,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+/** Partition reconciler for Google Cloud Bigtable Change Streams. */
+@Internal
+@Experimental
+package org.apache.beam.sdk.io.gcp.bigtable.changestreams.reconciler;
 
-import PrecommitJobBuilder
-
-PrecommitJobBuilder builder = new PrecommitJobBuilder(
-    scope: this,
-    nameBase: 'Java_Amazon-Web-Services2_IO_Direct',
-    gradleTasks: [
-      ':sdks:java:io:amazon-web-services2:build',
-      ':sdks:java:io:amazon-web-services2:integrationTest',
-    ],
-    gradleSwitches: [
-      '-PdisableSpotlessCheck=true',
-      '-PdisableCheckStyle=true'
-    ], // spotless checked in separate pre-commit
-    triggerPathPatterns: [
-      '^sdks/java/core/src/main/.*$',
-      '^sdks/java/io/common/.*$',
-      '^sdks/java/io/amazon-web-services2/.*$',
-    ],
-    timeoutMins: 120,
-    )
-builder.build {
-  publishers {
-    archiveJunit('**/build/test-results/**/*.xml')
-  }
-}
+import org.apache.beam.sdk.annotations.Experimental;
+import org.apache.beam.sdk.annotations.Internal;

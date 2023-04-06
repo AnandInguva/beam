@@ -15,30 +15,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package org.apache.beam.sdk.io.gcp.bigtable.changestreams.estimator;
 
-import PrecommitJobBuilder
+import org.apache.beam.sdk.annotations.Internal;
 
-PrecommitJobBuilder builder = new PrecommitJobBuilder(
-    scope: this,
-    nameBase: 'Java_Kinesis_IO_Direct',
-    gradleTasks: [
-      ':sdks:java:io:kinesis:build',
-      ':sdks:java:io:kinesis:expansion-service:build',
-      ':sdks:java:io:kinesis:integrationTest',
-    ],
-    gradleSwitches: [
-      '-PdisableSpotlessCheck=true',
-      '-PdisableCheckStyle=true'
-    ], // spotless checked in separate pre-commit
-    triggerPathPatterns: [
-      '^sdks/java/core/src/main/.*$',
-      '^sdks/java/io/common/.*$',
-      '^sdks/java/io/kinesis/.*$',
-    ],
-    timeoutMins: 60,
-    )
-builder.build {
-  publishers {
-    archiveJunit('**/build/test-results/**/*.xml')
+/** Represents an error during encoding (serializing) a class. */
+@Internal
+public class EncodingException extends RuntimeException {
+  public EncodingException(Throwable e) {
+    super(e);
   }
 }

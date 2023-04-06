@@ -15,21 +15,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.beam.sdk.io.gcp.spanner.changestreams.restriction;
+package org.apache.beam.sdk.io.gcp.bigtable.changestreams.estimator;
 
-/** This enum contains the states that PartitionRestrictionTracker will go through. */
-public enum PartitionMode {
-  // In this state, the restriction tracker will update the state of the input partition token
-  // from SCHEDULED to RUNNING.
-  UPDATE_STATE,
-  // In this state, the restriction tracker will execute a change stream query.
-  QUERY_CHANGE_STREAM,
-  // In this state, the restriction tracker will wait for the child partition SDFs to start
-  // running before terminating the SDF.
-  WAIT_FOR_CHILD_PARTITIONS,
-  // In this state, the restriction tracker will terminate the SDF.
-  DONE,
+import static org.junit.Assert.assertEquals;
 
-  // Occurs when Dataflow checkpoints the current restriction.
-  STOP
+import org.joda.time.Instant;
+import org.junit.Test;
+
+public class NullThroughputEstimatorTest {
+  private static final double DELTA = 1e-10;
+
+  @Test
+  public void alwaysReturns0AsEstimatedThroughput() {
+    final NullThroughputEstimator<byte[]> estimator = new NullThroughputEstimator<>();
+    assertEquals(estimator.get(), 0D, DELTA);
+
+    estimator.update(Instant.ofEpochSecond(1), new byte[10]);
+    assertEquals(estimator.getFrom(Instant.ofEpochSecond(1)), 0D, DELTA);
+    estimator.update(Instant.ofEpochSecond(2), new byte[20]);
+    assertEquals(estimator.getFrom(Instant.ofEpochSecond(2)), 0D, DELTA);
+  }
 }
