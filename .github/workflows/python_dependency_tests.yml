@@ -17,6 +17,8 @@ concurrency:
 jobs:
 
   python_dependency_tests:
+    permissions:
+      issues: write
     name: 'Python Dependency Tests'
     runs-on: ${{matrix.os}}
     strategy:
