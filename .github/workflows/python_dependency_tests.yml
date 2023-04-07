@@ -13,20 +13,22 @@ concurrency:
   group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
   cancel-in-progress: true
 
-python_dependency_tests:
-  name: 'Python Dependency Tests'
-  runs-on: ${{matrix.os}}
-  strategy:
-    fail-fast: false
-    matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        params: [
-          {"py_ver": "3.7", "py_env": "py37"},
-          {"py_ver": "3.8", "py_env": "py38"},
-          {"py_ver": "3.9", "py_env": "py39"},
-          {"py_ver": "3.10", "py_env": "py310" },
-          { "py_ver": "3.11", "py_env": "py311" },
-        ]
+jobs:
+
+  python_dependency_tests:
+    name: 'Python Dependency Tests'
+    runs-on: ${{matrix.os}}
+    strategy:
+      fail-fast: false
+      matrix:
+          os: [ubuntu-latest, macos-latest, windows-latest]
+          params: [
+            {"py_ver": "3.7", "py_env": "py37"},
+            {"py_ver": "3.8", "py_env": "py38"},
+            {"py_ver": "3.9", "py_env": "py39"},
+            {"py_ver": "3.10", "py_env": "py310" },
+            { "py_ver": "3.11", "py_env": "py311" },
+          ]
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
