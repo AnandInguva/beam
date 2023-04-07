@@ -1,3 +1,22 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# To learn more about GitHub Actions in Apache Beam check the CI.md
+
 name: Python Dependency Tests
 
 on:
@@ -50,15 +69,15 @@ jobs:
         run: pip install --no-deps -v -e .[test,gcp,interactive,dataframe,aws,azure]
       - name: Run pip check
         run: pip check || (echo "Workflow failed. It can be due to conflicting dependencies or does not include required Beam's dependencies. If Beam dependencies have changed, you need to regenerate base_image_requirements.txt. See https://s.apache.org/beam-python-requirements-generate" && exit 1)
-      - if: ${{ failure() }}
-        uses: JasonEtco/create-an-issue@v2
-        with:
-          update_existing: true
-          description: "Workflow failed. It can be due to conflicting dependencies or does not include required Beam's dependencies. If Beam dependencies have changed, you need to regenerate base_image_requirements.txt. See https://s.apache.org/beam-python-requirements-generate"
-          title: "Beam Python dependencies are out of sync."
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # id: create-issue
-        # - run: 'echo Created issue number ${{ steps.create-issue.outputs.number }}'
-        # - run: 'echo Created ${{ steps.create-issue.outputs.url }}'
+#      - if: ${{ failure() }}
+#        uses: JasonEtco/create-an-issue@v2
+#        with:
+#          update_existing: true
+#          description: "Workflow failed. It can be due to conflicting dependencies or does not include required Beam's dependencies. If Beam dependencies have changed, you need to regenerate base_image_requirements.txt. See https://s.apache.org/beam-python-requirements-generate"
+#          title: "Beam Python dependencies are out of sync."
+#        env:
+#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#        id: create-issue
+#        - run: 'echo Created issue number ${{ steps.create-issue.outputs.number }}'
+#        - run: 'echo Created ${{ steps.create-issue.outputs.url }}'
 
