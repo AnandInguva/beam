@@ -69,14 +69,14 @@ jobs:
         run: pip install --no-deps -v -e .[test,gcp,interactive,dataframe,aws,azure]
       - name: Run pip check
         run: pip check || (echo "Workflow failed. It can be due to conflicting dependencies or does not include required Beam's dependencies. If Beam dependencies have changed, you need to regenerate base_image_requirements.txt. See https://s.apache.org/beam-python-requirements-generate" && exit 1)
-#      - if: ${{ failure() }}
-#        uses: JasonEtco/create-an-issue@v2
-#        with:
-#          update_existing: true
-#          description: "Workflow failed. It can be due to conflicting dependencies or does not include required Beam's dependencies. If Beam dependencies have changed, you need to regenerate base_image_requirements.txt. See https://s.apache.org/beam-python-requirements-generate"
-#          title: "Beam Python dependencies are out of sync."
-#        env:
-#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - if: ${{ failure() }}
+        uses: JasonEtco/create-an-issue@v2
+        with:
+          update_existing: true
+          description: "Workflow failed. It can be due to conflicting dependencies or does not include required Beam's dependencies. If Beam dependencies have changed, you need to regenerate base_image_requirements.txt. See https://s.apache.org/beam-python-requirements-generate"
+          title: "Beam Python dependencies are out of sync."
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 #        id: create-issue
 #        - run: 'echo Created issue number ${{ steps.create-issue.outputs.number }}'
 #        - run: 'echo Created ${{ steps.create-issue.outputs.url }}'
