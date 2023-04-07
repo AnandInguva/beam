@@ -72,7 +72,7 @@ jobs:
       - if: ${{ failure() }}
         uses: JasonEtco/create-an-issue@v2
         with:
-          filename: .github/ISSUE_TEMPLATE/meeting-notes.md
+          filename: .github/ISSUE_TEMPLATE/tmp.md
           update_existing: true
 #          description: "Workflow failed. It can be due to conflicting dependencies or does not include required Beam's dependencies. If Beam dependencies have changed, you need to regenerate base_image_requirements.txt. See https://s.apache.org/beam-python-requirements-generate"
 #          title: "Beam Python dependencies are out of sync."
@@ -81,14 +81,3 @@ jobs:
 #        id: create-issue
 #        - run: 'echo Created issue number ${{ steps.create-issue.outputs.number }}'
 #        - run: 'echo Created ${{ steps.create-issue.outputs.url }}'
-
-`meeting-notes.md`
-
----
-name: Weekly Meeting Notes
-about: Used for taking notes in our daily standups, with a new issue every week.
-title: "Weekly Meeting Notes: {{ date | date('MMMM Do') }} - {{ date | date('add', 5, 'days') | date('Do') }}"
-labels:
-  - "Meeting 💬"
----
-### Monday, {{ date | date('MMM Do') }}
