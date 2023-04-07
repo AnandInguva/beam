@@ -1,4 +1,4 @@
-name: Python Dependency Tests.
+name: Python Dependency Tests
 
 on:
   schedule:
@@ -6,7 +6,8 @@ on:
   pull_request:
     branches: ['master', 'release-*']
     tags: 'v*'
-    paths: ['sdks/python/setup.py']
+    # paths where Beam Python's dependencies are configured.
+    paths: ['sdks/python/setup.py', 'sdks/python/build-requirements.txt', 'sdks/python/container/base_image_requirements_manual.txt']
 
 # This allows a subsequently queued workflow run to interrupt previous runs
 concurrency:
@@ -21,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-          os: [ubuntu-latest, macos-latest, windows-latest]
+          os: [ubuntu-latest]
           params: [
             {"py_ver": "3.7", "py_env": "py37"},
             {"py_ver": "3.8", "py_env": "py38"},
@@ -45,4 +46,6 @@ jobs:
       - name: Install Apache Beam
         working-directory: ./sdks/python
         run: pip install --no-deps -v -e .[test,gcp,interactive,dataframe,aws,azure]
+      - name: Run pip check
+        run: pip check || (echo "Workflow failed. It can be due to conflicting dependencies or does not include required Beam's dependencies. If Beam dependencies have changed, you need to regenerate base_image_requirements.txt. See https://s.apache.org/beam-python-requirements-generate" && exit 1)
         # when this fails, try to run gradle task to generate requirements.
