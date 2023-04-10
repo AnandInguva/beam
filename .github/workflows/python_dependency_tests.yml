@@ -68,14 +68,21 @@ jobs:
         working-directory: ./sdks/python
         run: pip install --no-deps -v -e .[test,gcp,interactive,dataframe,aws,azure]
       - name: Run pip check
-        run: pip check || (echo "Workflow failed. It can be due to conflicting dependencies or does not include required Beam's dependencies. If Beam dependencies have changed, you need to regenerate base_image_requirements.txt. See https://s.apache.org/beam-python-requirements-generate" && exit 1)
+        run: |
+          pip check >> $GITHUB_OUTPUT
+      - if: ${{ failure() }}
+        name: Create issue md file.
+        uses: DamianReeves/write-file-action@v1.2
+        with:
+          path: ./tmp.md
+          contents: |
+            title: Title of the issue.
+            description: Description of the issue.
       - if: ${{ failure() }}
         uses: JasonEtco/create-an-issue@v2
         with:
-          filename: .github/ISSUE_TEMPLATE/tmp.md
+          filename: ./tmp.md
           update_existing: true
-#          description: "Workflow failed. It can be due to conflicting dependencies or does not include required Beam's dependencies. If Beam dependencies have changed, you need to regenerate base_image_requirements.txt. See https://s.apache.org/beam-python-requirements-generate"
-#          title: "Beam Python dependencies are out of sync."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 #        id: create-issue
