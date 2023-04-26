@@ -17,6 +17,8 @@
  */
 package org.apache.beam.sdk.io.gcp.spanner;
 
+import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkNotNull;
+
 import com.google.auto.value.AutoValue;
 import com.google.cloud.spanner.BatchReadOnlyTransaction;
 import com.google.cloud.spanner.Options;
@@ -37,7 +39,6 @@ import org.apache.beam.sdk.transforms.Reshuffle;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.annotations.VisibleForTesting;
-import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.cache.CacheBuilder;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.cache.CacheLoader;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.cache.LoadingCache;
@@ -118,8 +119,7 @@ abstract class BatchSpannerRead
         SpannerConfig config, PCollectionView<? extends Transaction> txView) {
       this.config = config;
       this.txView = txView;
-      Preconditions.checkNotNull(config.getRpcPriority());
-      Preconditions.checkNotNull(config.getRpcPriority().get());
+      checkNotNull(config.getRpcPriority());
     }
 
     @Setup
@@ -138,6 +138,8 @@ abstract class BatchSpannerRead
       BatchReadOnlyTransaction batchTx =
           spannerAccessor.getBatchClient().batchReadOnlyTransaction(tx.transactionId());
       ReadOperation op = c.element();
+      boolean dataBoostEnabled =
+          config.getDataBoostEnabled() != null && config.getDataBoostEnabled().get();
 
       // While this creates a ServiceCallMetric for every input element, in reality, the number
       // of input elements will either be very few (normally 1!), or they will differ and
@@ -152,7 +154,8 @@ abstract class BatchSpannerRead
               batchTx.partitionQuery(
                   op.getPartitionOptions(),
                   op.getQuery(),
-                  Options.priority(config.getRpcPriority().get()));
+                  Options.priority(config.getRpcPriority().get()),
+                  Options.dataBoostEnabled(dataBoostEnabled));
         } else if (op.getIndex() != null) {
           // Read with index was selected.
           partitions =
@@ -162,7 +165,8 @@ abstract class BatchSpannerRead
                   op.getIndex(),
                   op.getKeySet(),
                   op.getColumns(),
-                  Options.priority(config.getRpcPriority().get()));
+                  Options.priority(config.getRpcPriority().get()),
+                  Options.dataBoostEnabled(dataBoostEnabled));
         } else {
           // Read from table was selected.
           partitions =
@@ -171,7 +175,8 @@ abstract class BatchSpannerRead
                   op.getTable(),
                   op.getKeySet(),
                   op.getColumns(),
-                  Options.priority(config.getRpcPriority().get()));
+                  Options.priority(config.getRpcPriority().get()),
+                  Options.dataBoostEnabled(dataBoostEnabled));
         }
         metric.call("ok");
       } catch (SpannerException e) {

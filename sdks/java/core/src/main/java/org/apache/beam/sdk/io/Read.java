@@ -50,6 +50,7 @@ import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.transforms.splittabledofn.ManualWatermarkEstimator;
 import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
 import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker.HasProgress;
+import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker.Progress;
 import org.apache.beam.sdk.transforms.splittabledofn.SplitResult;
 import org.apache.beam.sdk.transforms.splittabledofn.WatermarkEstimators;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
@@ -268,7 +269,6 @@ public class Read {
   static class BoundedSourceAsSDFWrapperFn<T, BoundedSourceT extends BoundedSource<T>>
       extends DoFn<BoundedSourceT, T> {
     private static final Logger LOG = LoggerFactory.getLogger(BoundedSourceAsSDFWrapperFn.class);
-    private static final long DEFAULT_DESIRED_BUNDLE_SIZE_BYTES = 64 * (1 << 20);
 
     @GetInitialRestriction
     public BoundedSourceT initialRestriction(@Element BoundedSourceT element) {
@@ -290,12 +290,15 @@ public class Read {
       long estimatedSize = restriction.getEstimatedSizeBytes(pipelineOptions);
       // Split into pieces as close to the default desired bundle size but if that would cause too
       // few splits then prefer to split up to the default desired number of splits.
-      long splitBundleSize =
-          Math.min(
-              DEFAULT_DESIRED_BUNDLE_SIZE_BYTES,
-              Math.max(1L, estimatedSize / DEFAULT_DESIRED_NUM_SPLITS));
+      long desiredChunkSize;
+      if (estimatedSize <= 0) {
+        desiredChunkSize = 64 << 20; // 64mb
+      } else {
+        // 1mb --> 1 shard; 1gb --> 32 shards; 1tb --> 1000 shards, 1pb --> 32k shards
+        desiredChunkSize = Math.max(1 << 20, (long) (1000 * Math.sqrt(estimatedSize)));
+      }
       List<BoundedSourceT> splits =
-          (List<BoundedSourceT>) restriction.split(splitBundleSize, pipelineOptions);
+          (List<BoundedSourceT>) restriction.split(desiredChunkSize, pipelineOptions);
       for (BoundedSourceT split : splits) {
         receiver.output(split);
       }
@@ -329,7 +332,7 @@ public class Read {
      */
     private static class BoundedSourceAsSDFRestrictionTracker<
             BoundedSourceT extends BoundedSource<T>, T>
-        extends RestrictionTracker<BoundedSourceT, TimestampedValue<T>[]> {
+        extends RestrictionTracker<BoundedSourceT, TimestampedValue<T>[]> implements HasProgress {
       private final BoundedSourceT initialRestriction;
       private final PipelineOptions pipelineOptions;
       private BoundedSource.BoundedReader<T> currentReader;
@@ -439,6 +442,19 @@ public class Read {
       @Override
       public IsBounded isBounded() {
         return IsBounded.BOUNDED;
+      }
+
+      @Override
+      public Progress getProgress() {
+        // Unknown is treated as 0 progress
+        if (currentReader == null) {
+          return Progress.NONE;
+        }
+        Double consumedFraction = currentReader.getFractionConsumed();
+        if (consumedFraction == null) {
+          return Progress.NONE;
+        }
+        return Progress.from(consumedFraction, 1 - consumedFraction);
       }
     }
   }
@@ -966,7 +982,7 @@ public class Read {
       public Progress getProgress() {
         // We treat the empty source as implicitly done.
         if (currentRestriction().getSource() instanceof EmptyUnboundedSource) {
-          return RestrictionTracker.Progress.from(1, 0);
+          return Progress.from(1, 0);
         }
 
         boolean resetReaderAfter = false;
@@ -984,7 +1000,7 @@ public class Read {
           if (size != UnboundedReader.BACKLOG_UNKNOWN) {
             // The UnboundedSource/UnboundedReader API has no way of reporting how much work
             // has been completed so runners can only see the work remaining changing.
-            return RestrictionTracker.Progress.from(0, size);
+            return Progress.from(0, size);
           }
 
           // TODO: Support "global" backlog reporting
@@ -994,7 +1010,7 @@ public class Read {
           // }
 
           // We treat unknown as 0 progress
-          return RestrictionTracker.Progress.from(0, 1);
+          return Progress.NONE;
         } finally {
           if (resetReaderAfter) {
             cacheCurrentReader(initialRestriction);

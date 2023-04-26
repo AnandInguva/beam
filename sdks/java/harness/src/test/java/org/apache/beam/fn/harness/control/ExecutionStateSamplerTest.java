@@ -33,11 +33,21 @@ import org.apache.beam.fn.harness.control.ExecutionStateSampler.ExecutionState;
 import org.apache.beam.fn.harness.control.ExecutionStateSampler.ExecutionStateTracker;
 import org.apache.beam.fn.harness.control.ExecutionStateSampler.ExecutionStateTrackerStatus;
 import org.apache.beam.runners.core.metrics.MonitoringInfoEncodings;
+import org.apache.beam.sdk.metrics.Counter;
+import org.apache.beam.sdk.metrics.DelegatingHistogram;
+import org.apache.beam.sdk.metrics.Distribution;
+import org.apache.beam.sdk.metrics.Gauge;
+import org.apache.beam.sdk.metrics.Histogram;
+import org.apache.beam.sdk.metrics.MetricName;
+import org.apache.beam.sdk.metrics.Metrics;
+import org.apache.beam.sdk.metrics.MetricsEnvironment;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.testing.ExpectedLogs;
-import org.apache.beam.vendor.grpc.v1p43p2.com.google.protobuf.ByteString;
+import org.apache.beam.sdk.util.HistogramData;
+import org.apache.beam.vendor.grpc.v1p54p0.com.google.protobuf.ByteString;
 import org.joda.time.DateTimeUtils.MillisProvider;
 import org.joda.time.Duration;
+import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -50,7 +60,20 @@ import org.mockito.stubbing.Answer;
 @RunWith(JUnit4.class)
 public class ExecutionStateSamplerTest {
 
+  private static final Counter TEST_USER_COUNTER = Metrics.counter("foo", "counter");
+  private static final Distribution TEST_USER_DISTRIBUTION =
+      Metrics.distribution("foo", "distribution");
+  private static final Gauge TEST_USER_GAUGE = Metrics.gauge("foo", "gauge");
+  private static final Histogram TEST_USER_HISTOGRAM =
+      new DelegatingHistogram(
+          MetricName.named("foo", "histogram"), HistogramData.LinearBuckets.of(0, 100, 1), false);
+
   @Rule public ExpectedLogs expectedLogs = ExpectedLogs.none(ExecutionStateSampler.class);
+
+  @After
+  public void tearDown() {
+    MetricsEnvironment.setCurrentContainer(null);
+  }
 
   @Test
   public void testSamplingProducesCorrectFinalResults() throws Exception {
@@ -110,6 +133,10 @@ public class ExecutionStateSamplerTest {
               }
             });
 
+    // No active PTransform
+    assertNull(tracker1.getCurrentThreadsPTransformId());
+    assertNull(tracker2.getCurrentThreadsPTransformId());
+
     // No tracked thread
     assertNull(tracker1.getStatus());
     assertNull(tracker2.getStatus());
@@ -119,6 +146,10 @@ public class ExecutionStateSamplerTest {
 
     state1.activate();
     state2.activate();
+
+    // Check that the current threads PTransform id is available
+    assertEquals("ptransformId1", tracker1.getCurrentThreadsPTransformId());
+    assertEquals("ptransformId2", tracker2.getCurrentThreadsPTransformId());
 
     // Check that the status returns a value as soon as it is activated.
     ExecutionStateTrackerStatus activeBundleStatus1 = tracker1.getStatus();
@@ -141,6 +172,10 @@ public class ExecutionStateSamplerTest {
 
     waitTillActive.countDown();
     waitForSamples.await();
+
+    // Check that the current threads PTransform id is available
+    assertEquals("ptransformId1", tracker1.getCurrentThreadsPTransformId());
+    assertEquals("ptransformId2", tracker2.getCurrentThreadsPTransformId());
 
     // Check that we get additional data about the active PTransform.
     ExecutionStateTrackerStatus activeStateStatus1 = tracker1.getStatus();
@@ -184,6 +219,10 @@ public class ExecutionStateSamplerTest {
     waitTillStatesDeactivated.countDown();
     waitForEvenMoreSamples.await();
 
+    // Check that the current threads PTransform id is not available
+    assertNull(tracker1.getCurrentThreadsPTransformId());
+    assertNull(tracker2.getCurrentThreadsPTransformId());
+
     // Check the status once the states are deactivated but the bundle is still active
     ExecutionStateTrackerStatus inactiveStateStatus1 = tracker1.getStatus();
     ExecutionStateTrackerStatus inactiveStateStatus2 = tracker2.getStatus();
@@ -221,7 +260,9 @@ public class ExecutionStateSamplerTest {
     tracker1.reset();
     tracker2.reset();
 
-    // Shouldn't have a status returned since there is no active bundle.
+    // Shouldn't have a status or pt ransform id returned since there is no active bundle.
+    assertNull(tracker1.getCurrentThreadsPTransformId());
+    assertNull(tracker2.getCurrentThreadsPTransformId());
     assertNull(tracker1.getStatus());
     assertNull(tracker2.getStatus());
 
@@ -318,6 +359,108 @@ public class ExecutionStateSamplerTest {
   }
 
   @Test
+  public void testCountersReturnedAreBasedUponCurrentExecutionState() throws Exception {
+    MillisProvider clock = mock(MillisProvider.class);
+    ExecutionStateSampler sampler =
+        new ExecutionStateSampler(
+            PipelineOptionsFactory.fromArgs("--experiments=state_sampling_period_millis=10")
+                .create(),
+            clock);
+    ExecutionStateTracker tracker = sampler.create();
+    MetricsEnvironment.setCurrentContainer(tracker.getMetricsContainer());
+    ExecutionState state = tracker.create("shortId", "ptransformId", "uniqueName", "state");
+
+    state.activate();
+    TEST_USER_COUNTER.inc();
+    TEST_USER_DISTRIBUTION.update(2);
+    TEST_USER_GAUGE.set(3);
+    TEST_USER_HISTOGRAM.update(4);
+    state.deactivate();
+
+    TEST_USER_COUNTER.inc(11);
+    TEST_USER_DISTRIBUTION.update(12);
+    TEST_USER_GAUGE.set(13);
+    TEST_USER_HISTOGRAM.update(14);
+    TEST_USER_HISTOGRAM.update(14);
+
+    // Verify the execution state was updated
+    assertEquals(
+        1L,
+        (long)
+            tracker
+                .getMetricsContainerRegistry()
+                .getContainer("ptransformId")
+                .getCounter(TEST_USER_COUNTER.getName())
+                .getCumulative());
+    assertEquals(
+        2L,
+        (long)
+            tracker
+                .getMetricsContainerRegistry()
+                .getContainer("ptransformId")
+                .getDistribution(TEST_USER_DISTRIBUTION.getName())
+                .getCumulative()
+                .sum());
+    assertEquals(
+        3L,
+        (long)
+            tracker
+                .getMetricsContainerRegistry()
+                .getContainer("ptransformId")
+                .getGauge(TEST_USER_GAUGE.getName())
+                .getCumulative()
+                .value());
+    assertEquals(
+        1L,
+        (long)
+            tracker
+                .getMetricsContainerRegistry()
+                .getContainer("ptransformId")
+                .getHistogram(
+                    TEST_USER_HISTOGRAM.getName(), HistogramData.LinearBuckets.of(0, 100, 1))
+                .getCumulative()
+                .getCount(0));
+
+    // Verify the unbound container
+    assertEquals(
+        11L,
+        (long)
+            tracker
+                .getMetricsContainerRegistry()
+                .getUnboundContainer()
+                .getCounter(TEST_USER_COUNTER.getName())
+                .getCumulative());
+    assertEquals(
+        12L,
+        (long)
+            tracker
+                .getMetricsContainerRegistry()
+                .getUnboundContainer()
+                .getDistribution(TEST_USER_DISTRIBUTION.getName())
+                .getCumulative()
+                .sum());
+    assertEquals(
+        13L,
+        (long)
+            tracker
+                .getMetricsContainerRegistry()
+                .getUnboundContainer()
+                .getGauge(TEST_USER_GAUGE.getName())
+                .getCumulative()
+                .value());
+    assertEquals(
+        2L,
+        (long)
+            tracker
+                .getMetricsContainerRegistry()
+                .getUnboundContainer()
+                .getHistogram(
+                    TEST_USER_HISTOGRAM.getName(), HistogramData.LinearBuckets.of(0, 100, 1))
+                .getCumulative()
+                .getCount(0));
+  }
+
+  @Test
   public void testTrackerReuse() throws Exception {
     MillisProvider clock = mock(MillisProvider.class);
     ExecutionStateSampler sampler =
@@ -326,6 +469,7 @@ public class ExecutionStateSamplerTest {
                 .create(),
             clock);
     ExecutionStateTracker tracker = sampler.create();
+    MetricsEnvironment.setCurrentContainer(tracker.getMetricsContainer());
     ExecutionState state = tracker.create("shortId", "ptransformId", "ptransformIdName", "process");
 
     CountDownLatch waitTillActive = new CountDownLatch(1);
@@ -366,6 +510,7 @@ public class ExecutionStateSamplerTest {
       state.activate();
       waitTillActive.countDown();
       waitForSamples.await();
+      TEST_USER_COUNTER.inc();
       state.deactivate();
       Map<String, ByteString> finalResults = new HashMap<>();
       tracker.updateFinalMonitoringData(finalResults);
@@ -375,6 +520,14 @@ public class ExecutionStateSamplerTest {
           // The CountDownLatch ensures that we will see either the prior value or
           // the latest value.
           anyOf(equalTo(900L), equalTo(1000L)));
+      assertEquals(
+          1L,
+          (long)
+              tracker
+                  .getMetricsContainerRegistry()
+                  .getContainer("ptransformId")
+                  .getCounter(TEST_USER_COUNTER.getName())
+                  .getCumulative());
       tracker.reset();
     }
 
@@ -383,6 +536,7 @@ public class ExecutionStateSamplerTest {
       state.activate();
       waitTillSecondStateActive.countDown();
       waitForMoreSamples.await();
+      TEST_USER_COUNTER.inc();
       state.deactivate();
       Map<String, ByteString> finalResults = new HashMap<>();
       tracker.updateFinalMonitoringData(finalResults);
@@ -392,6 +546,14 @@ public class ExecutionStateSamplerTest {
           // The CountDownLatch ensures that we will see either the prior value or
           // the latest value.
           anyOf(equalTo(400L), equalTo(500L)));
+      assertEquals(
+          1L,
+          (long)
+              tracker
+                  .getMetricsContainerRegistry()
+                  .getContainer("ptransformId")
+                  .getCounter(TEST_USER_COUNTER.getName())
+                  .getCumulative());
       tracker.reset();
     }
 

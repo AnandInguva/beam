@@ -90,6 +90,7 @@ parameter can be anything, as long as elements can be grouped by it.
 
 import collections
 import logging
+import os
 import random
 import uuid
 from collections import namedtuple
@@ -276,7 +277,8 @@ class MatchContinuously(beam.PTransform):
       start_timestamp=Timestamp.now(),
       stop_timestamp=MAX_TIMESTAMP,
       match_updated_files=False,
-      apply_windowing=False):
+      apply_windowing=False,
+      empty_match_treatment=EmptyMatchTreatment.ALLOW):
     """Initializes a MatchContinuously transform.
 
     Args:
@@ -298,6 +300,7 @@ class MatchContinuously(beam.PTransform):
     self.stop_ts = stop_timestamp
     self.match_upd = match_updated_files
     self.apply_windowing = apply_windowing
+    self.empty_match_treatment = empty_match_treatment
 
   def expand(self, pbegin) -> beam.PCollection[filesystem.FileMetadata]:
     # invoke periodic impulse
@@ -310,7 +313,7 @@ class MatchContinuously(beam.PTransform):
     match_files = (
         impulse
         | 'GetFilePattern' >> beam.Map(lambda x: self.file_pattern)
-        | MatchAll())
+        | MatchAll(self.empty_match_treatment))
 
     # apply deduplication strategy if required
     if self.has_deduplication:
@@ -453,7 +456,10 @@ def _format_shard(
   return format.format(**kwargs)
 
 
-def destination_prefix_naming(suffix=None):
+FileNaming = Callable[[Any, Any, int, int, Any, str, str], str]
+
+
+def destination_prefix_naming(suffix=None) -> FileNaming:
   def _inner(window, pane, shard_index, total_shards, compression, destination):
     prefix = str(destination)
     return _format_shard(
@@ -462,10 +468,19 @@ def destination_prefix_naming(suffix=None):
   return _inner
 
 
-def default_file_naming(prefix, suffix=None):
+def default_file_naming(prefix, suffix=None) -> FileNaming:
   def _inner(window, pane, shard_index, total_shards, compression, destination):
     return _format_shard(
         window, pane, shard_index, total_shards, compression, prefix, suffix)
+
+  return _inner
+
+
+def single_file_naming(prefix, suffix=None) -> FileNaming:
+  def _inner(window, pane, shard_index, total_shards, compression, destination):
+    assert shard_index in (0, None), shard_index
+    assert total_shards in (1, None), total_shards
+    return _format_shard(window, pane, None, None, compression, prefix, suffix)
 
   return _inner
 
@@ -658,40 +673,49 @@ class _MoveTempFilesIntoFinalDestinationFn(beam.DoFn):
 
   def process(self, element, w=beam.DoFn.WindowParam):
     destination = element[0]
-    file_results = list(element[1])
+    # list of FileResult objects for temp files
+    temp_file_results = list(element[1])
+    # list of FileResult objects for final files
+    final_file_results = []
 
-    for i, r in enumerate(file_results):
+    for i, r in enumerate(temp_file_results):
       # TODO(pabloem): Handle compression for files.
       final_file_name = self.file_naming_fn(
-          r.window, r.pane, i, len(file_results), '', destination)
+          r.window, r.pane, i, len(temp_file_results), '', destination)
 
-      _LOGGER.info(
-          'Moving temporary file %s to dir: %s as %s. Res: %s',
-          r.file_name,
-          self.path.get(),
-          final_file_name,
-          r)
+      final_file_results.append(
+          FileResult(
+              final_file_name,
+              i,
+              len(temp_file_results),
+              r.window,
+              r.pane,
+              destination))
 
-      final_full_path = filesystems.FileSystems.join(
-          self.path.get(), final_file_name)
-
-      # TODO(pabloem): Batch rename requests?
-      try:
-        filesystems.FileSystems.rename([r.file_name], [final_full_path])
-      except BeamIOError:
-        # This error is not serious, because it may happen on a retry of the
-        # bundle. We simply log it.
-        _LOGGER.debug(
-            'File %s failed to be copied. This may be due to a bundle'
-            ' being retried.',
-            r.file_name)
-
-      yield FileResult(
-          final_file_name, i, len(file_results), r.window, r.pane, destination)
-
+    move_from = [f.file_name for f in temp_file_results]
+    move_to = [f.file_name for f in final_file_results]
     _LOGGER.info(
-        'Checking orphaned temporary files for'
-        ' destination %s and window %s',
+        'Moving temporary files %s to dir: %s as %s',
+        map(os.path.basename, move_from),
+        self.path.get(),
+        move_to)
+
+    try:
+      filesystems.FileSystems.rename(
+          move_from,
+          [filesystems.FileSystems.join(self.path.get(), f) for f in move_to])
+    except BeamIOError:
+      # This error is not serious, because it may happen on a retry of the
+      # bundle. We simply log it.
+      _LOGGER.debug(
+          'Exception occurred during moving files: %s. This may be due to a'
+          ' bundle being retried.',
+          move_from)
+
+    yield from final_file_results
+
+    _LOGGER.debug(
+        'Checking orphaned temporary files for destination %s and window %s',
         destination,
         w)
     writer_key = (destination, w)
@@ -704,9 +728,10 @@ class _MoveTempFilesIntoFinalDestinationFn(beam.DoFn):
       match_result = filesystems.FileSystems.match(['%s*' % prefix])
       orphaned_files = [m.path for m in match_result[0].metadata_list]
 
-      _LOGGER.info(
-          'Some files may be left orphaned in the temporary folder: %s',
-          orphaned_files)
+      if len(orphaned_files) > 0:
+        _LOGGER.info(
+            'Some files may be left orphaned in the temporary folder: %s',
+            orphaned_files)
     except BeamIOError as e:
       _LOGGER.info('Exceptions when checking orphaned files: %s', e)
 

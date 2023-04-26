@@ -31,6 +31,7 @@ import com.google.cloud.spanner.ErrorCode;
 import com.google.cloud.spanner.FakeBatchTransactionId;
 import com.google.cloud.spanner.FakePartitionFactory;
 import com.google.cloud.spanner.KeySet;
+import com.google.cloud.spanner.Options.ReadAndQueryOption;
 import com.google.cloud.spanner.Options.ReadQueryUpdateTransactionOption;
 import com.google.cloud.spanner.Options.RpcPriority;
 import com.google.cloud.spanner.Partition;
@@ -55,12 +56,12 @@ import org.apache.beam.runners.core.metrics.MonitoringInfoConstants;
 import org.apache.beam.runners.core.metrics.MonitoringInfoMetricName;
 import org.apache.beam.sdk.Pipeline.PipelineExecutionException;
 import org.apache.beam.sdk.metrics.MetricsEnvironment;
+import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionView;
-import org.jetbrains.annotations.NotNull;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -130,7 +131,7 @@ public class SpannerIOReadTest implements Serializable {
   }
 
   @Test
-  public void runBatchQueryTestWithProjectId() {
+  public void runBatchQueryTestWithSpannerConfig() {
     runBatchQueryTest(
         SpannerIO.read()
             .withSpannerConfig(spannerConfig)
@@ -182,13 +183,26 @@ public class SpannerIOReadTest implements Serializable {
     assertEquals(RpcPriority.HIGH, readTransform.getSpannerConfig().getRpcPriority().get());
   }
 
+  @Test
+  public void runBatchQueryTestWithDataBoost() {
+    SpannerConfig spannerConfig1 = spannerConfig.withDataBoostEnabled(StaticValueProvider.of(true));
+    SpannerIO.Read readTransform =
+        SpannerIO.read()
+            .withSpannerConfig(spannerConfig1)
+            .withQuery(QUERY_STATEMENT)
+            .withQueryName(QUERY_NAME)
+            .withTimestampBound(TIMESTAMP_BOUND);
+    runBatchQueryTest(readTransform);
+  }
+
   private void runBatchQueryTest(SpannerIO.Read readTransform) {
     PCollection<Struct> results = pipeline.apply("read q", readTransform);
 
     when(mockBatchTx.partitionQuery(
             any(PartitionOptions.class),
             eq(Statement.of(QUERY_STATEMENT)),
-            any(ReadQueryUpdateTransactionOption.class)))
+            any(ReadQueryUpdateTransactionOption.class),
+            any(ReadAndQueryOption.class)))
         .thenReturn(Arrays.asList(fakePartition, fakePartition, fakePartition));
     when(mockBatchTx.execute(any(Partition.class)))
         .thenReturn(
@@ -214,7 +228,8 @@ public class SpannerIOReadTest implements Serializable {
     when(mockBatchTx.partitionQuery(
             any(PartitionOptions.class),
             eq(Statement.of(QUERY_STATEMENT)),
-            any(ReadQueryUpdateTransactionOption.class)))
+            any(ReadQueryUpdateTransactionOption.class),
+            any(ReadAndQueryOption.class)))
         .thenReturn(Arrays.asList(fakePartition, fakePartition));
     when(mockBatchTx.execute(any(Partition.class)))
         .thenReturn(ResultSets.forRows(FAKE_TYPE, FAKE_ROWS))
@@ -388,6 +403,19 @@ public class SpannerIOReadTest implements Serializable {
     assertEquals(RpcPriority.HIGH, readTransform.getSpannerConfig().getRpcPriority().get());
   }
 
+  @Test
+  public void runBatchReadTestWithDataBoost() {
+    SpannerConfig spannerConfig1 = spannerConfig.withDataBoostEnabled(StaticValueProvider.of(true));
+
+    SpannerIO.Read readTransform =
+        SpannerIO.read()
+            .withSpannerConfig(spannerConfig1)
+            .withTable(TABLE_ID)
+            .withColumns("id", "name")
+            .withTimestampBound(TIMESTAMP_BOUND);
+    runBatchReadTest(readTransform);
+  }
+
   private void runBatchReadTest(SpannerIO.Read readTransform) {
 
     PCollection<Struct> results = pipeline.apply("read q", readTransform);
@@ -396,7 +424,8 @@ public class SpannerIOReadTest implements Serializable {
             eq(TABLE_ID),
             eq(KeySet.all()),
             eq(Arrays.asList("id", "name")),
-            any(ReadQueryUpdateTransactionOption.class)))
+            any(ReadQueryUpdateTransactionOption.class),
+            any(ReadAndQueryOption.class)))
         .thenReturn(Arrays.asList(fakePartition, fakePartition, fakePartition));
     when(mockBatchTx.execute(any(Partition.class)))
         .thenReturn(
@@ -425,7 +454,8 @@ public class SpannerIOReadTest implements Serializable {
             eq(TABLE_ID),
             eq(KeySet.all()),
             eq(Arrays.asList("id", "name")),
-            any(ReadQueryUpdateTransactionOption.class)))
+            any(ReadQueryUpdateTransactionOption.class),
+            any(ReadAndQueryOption.class)))
         .thenReturn(Arrays.asList(fakePartition));
     when(mockBatchTx.execute(any(Partition.class)))
         .thenThrow(
@@ -553,7 +583,8 @@ public class SpannerIOReadTest implements Serializable {
             eq("theindex"),
             eq(KeySet.all()),
             eq(Arrays.asList("id", "name")),
-            any(ReadQueryUpdateTransactionOption.class)))
+            any(ReadQueryUpdateTransactionOption.class),
+            any(ReadAndQueryOption.class)))
         .thenReturn(Arrays.asList(fakePartition, fakePartition, fakePartition));
 
     when(mockBatchTx.execute(any(Partition.class)))
@@ -595,6 +626,70 @@ public class SpannerIOReadTest implements Serializable {
   }
 
   @Test
+  public void readAllPipelineWithSpannerReadAllConfiguration() {
+    PCollectionView<Transaction> tx =
+        pipeline.apply(
+            "tx",
+            SpannerIO.createTransaction()
+                .withSpannerConfig(spannerConfig)
+                .withTimestampBound(TIMESTAMP_BOUND));
+    runReadAllPipeline(
+        SpannerIO.readAll()
+            .withProjectId(PROJECT_ID)
+            .withInstanceId(INSTANCE_ID)
+            .withDatabaseId(DATABASE_ID)
+            .withServiceFactory(serviceFactory)
+            .withLowPriority()
+            .withTransaction(tx));
+  }
+
+  @Test
+  public void readAllPipelineWithSpannerReadAllConfigurationAsValueProviders() {
+    PCollectionView<Transaction> tx =
+        pipeline.apply(
+            "tx",
+            SpannerIO.createTransaction()
+                .withSpannerConfig(spannerConfig)
+                .withTimestampBound(TIMESTAMP_BOUND));
+    runReadAllPipeline(
+        SpannerIO.readAll()
+            .withProjectId(StaticValueProvider.of(PROJECT_ID))
+            .withInstanceId(StaticValueProvider.of(INSTANCE_ID))
+            .withDatabaseId(StaticValueProvider.of(DATABASE_ID))
+            .withServiceFactory(serviceFactory)
+            .withHighPriority()
+            .withTransaction(tx));
+  }
+
+  @Test
+  public void readAllPipelineWithSpannerCreationTransactionConfiguration() {
+    PCollectionView<Transaction> tx =
+        pipeline.apply(
+            "tx",
+            SpannerIO.createTransaction()
+                .withProjectId(PROJECT_ID)
+                .withInstanceId(INSTANCE_ID)
+                .withDatabaseId(DATABASE_ID)
+                .withServiceFactory(serviceFactory)
+                .withTimestampBound(TIMESTAMP_BOUND));
+    runReadAllPipeline(SpannerIO.readAll().withSpannerConfig(spannerConfig).withTransaction(tx));
+  }
+
+  @Test
+  public void readAllPipelineWithSpannerCreationTransactionConfigurationAsValueProviders() {
+    PCollectionView<Transaction> tx =
+        pipeline.apply(
+            "tx",
+            SpannerIO.createTransaction()
+                .withProjectId(StaticValueProvider.of(PROJECT_ID))
+                .withInstanceId(StaticValueProvider.of(INSTANCE_ID))
+                .withDatabaseId(StaticValueProvider.of(DATABASE_ID))
+                .withServiceFactory(serviceFactory)
+                .withTimestampBound(TIMESTAMP_BOUND));
+    runReadAllPipeline(SpannerIO.readAll().withSpannerConfig(spannerConfig).withTransaction(tx));
+  }
+
+  @Test
   public void readAllPipeline() {
     PCollectionView<Transaction> tx =
         pipeline.apply(
@@ -602,28 +697,31 @@ public class SpannerIOReadTest implements Serializable {
             SpannerIO.createTransaction()
                 .withSpannerConfig(spannerConfig)
                 .withTimestampBound(TIMESTAMP_BOUND));
+    runReadAllPipeline(SpannerIO.readAll().withSpannerConfig(spannerConfig).withTransaction(tx));
+  }
 
+  private void runReadAllPipeline(SpannerIO.ReadAll readAllTransform) {
     PCollection<ReadOperation> reads =
         pipeline.apply(
             Create.of(
                 ReadOperation.create().withQuery(QUERY_STATEMENT).withQueryName(QUERY_NAME),
                 ReadOperation.create().withTable(TABLE_ID).withColumns("id", "name")));
 
-    PCollection<Struct> results =
-        reads.apply(
-            "read all", SpannerIO.readAll().withSpannerConfig(spannerConfig).withTransaction(tx));
+    PCollection<Struct> results = reads.apply("read all", readAllTransform);
 
     when(mockBatchTx.partitionQuery(
             any(PartitionOptions.class),
             eq(Statement.of(QUERY_STATEMENT)),
-            any(ReadQueryUpdateTransactionOption.class)))
+            any(ReadQueryUpdateTransactionOption.class),
+            any(ReadAndQueryOption.class)))
         .thenReturn(Arrays.asList(fakePartition, fakePartition));
     when(mockBatchTx.partitionRead(
             any(PartitionOptions.class),
             eq(TABLE_ID),
             eq(KeySet.all()),
             eq(Arrays.asList("id", "name")),
-            any(ReadQueryUpdateTransactionOption.class)))
+            any(ReadQueryUpdateTransactionOption.class),
+            any(ReadAndQueryOption.class)))
         .thenReturn(Collections.singletonList(fakePartition));
 
     when(mockBatchTx.execute(any(Partition.class)))
@@ -686,7 +784,6 @@ public class SpannerIOReadTest implements Serializable {
     assertEquals(count, getQueryRequestMetric(config, queryName, status));
   }
 
-  @NotNull
   private HashMap<String, String> getBaseMetricsLabels(SpannerConfig config) {
     HashMap<String, String> baseLabels = new HashMap<>();
     baseLabels.put(MonitoringInfoConstants.Labels.PTRANSFORM, "");

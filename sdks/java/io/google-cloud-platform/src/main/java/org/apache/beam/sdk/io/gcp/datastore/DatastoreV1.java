@@ -247,7 +247,7 @@ public class DatastoreV1 {
   /**
    * When choosing the number of updates in a single RPC, do not go below this value. The actual
    * number of entities per request may be lower when we flush for the end of a bundle or if we hit
-   * {@link DatastoreV1.DATASTORE_BATCH_UPDATE_BYTES_LIMIT}.
+   * {@link #DATASTORE_BATCH_UPDATE_BYTES_LIMIT}.
    */
   @VisibleForTesting static final int DATASTORE_BATCH_UPDATE_ENTITIES_MIN = 5;
 
@@ -398,7 +398,7 @@ public class DatastoreV1 {
         throw new NoSuchElementException("Datastore total statistics unavailable");
       }
       Entity entity = batch.getEntityResults(0).getEntity();
-      return entity.getProperties().get("timestamp").getTimestampValue().getSeconds() * 1000000;
+      return entity.getPropertiesOrThrow("timestamp").getTimestampValue().getSeconds() * 1000000;
     }
 
     /**
@@ -451,7 +451,7 @@ public class DatastoreV1 {
         throws DatastoreException {
       String ourKind = query.getKind(0).getName();
       Entity entity = getLatestTableStats(ourKind, namespace, datastore, readTime);
-      return entity.getProperties().get("entity_bytes").getIntegerValue();
+      return entity.getPropertiesOrThrow("entity_bytes").getIntegerValue();
     }
 
     private static PartitionId.Builder forNamespace(@Nullable String namespace) {
@@ -684,7 +684,7 @@ public class DatastoreV1 {
                 options, v1Options.getProjectId(), v1Options.getLocalhost());
 
         Entity entity = getLatestTableStats(ourKind, namespace, datastore, getReadTime());
-        return entity.getProperties().get("count").getIntegerValue();
+        return entity.getPropertiesOrThrow("count").getIntegerValue();
       } catch (Exception e) {
         return -1;
       }
@@ -1304,10 +1304,10 @@ public class DatastoreV1 {
   /**
    * A {@link PTransform} that writes mutations to Cloud Datastore.
    *
-   * <p>It requires a {@link DoFn} that tranforms an object of type {@code T} to a {@link Mutation}.
-   * {@code T} is usually either an {@link Entity} or a {@link Key} <b>Note:</b> Only idempotent
-   * Cloud Datastore mutation operations (upsert and delete) should be used by the {@code DoFn}
-   * provided, as the commits are retried when failures occur.
+   * <p>It requires a {@link DoFn} that transforms an object of type {@code T} to a {@link
+   * Mutation}. {@code T} is usually either an {@link Entity} or a {@link Key} <b>Note:</b> Only
+   * idempotent Cloud Datastore mutation operations (upsert and delete) should be used by the {@code
+   * DoFn} provided, as the commits are retried when failures occur.
    */
   private abstract static class Mutate<T> extends PTransform<PCollection<T>, PDone> {
 
@@ -1485,7 +1485,7 @@ public class DatastoreV1 {
     private final V1DatastoreFactory datastoreFactory;
     // Current batch of mutations to be written.
     private final List<Mutation> mutations = new ArrayList<>();
-    private final HashSet<Mutation> uniqueMutations = new HashSet<>();
+    private final HashSet<com.google.datastore.v1.Key> uniqueMutationKeys = new HashSet<>();
     private int mutationsSize = 0; // Accumulated size of protos in mutations.
     private WriteBatcher writeBatcher;
     private transient AdaptiveThrottler adaptiveThrottler;
@@ -1542,12 +1542,27 @@ public class DatastoreV1 {
       }
     }
 
+    private static com.google.datastore.v1.Key getKey(Mutation m) {
+      if (m.hasUpsert()) {
+        return m.getUpsert().getKey();
+      } else if (m.hasInsert()) {
+        return m.getInsert().getKey();
+      } else if (m.hasDelete()) {
+        return m.getDelete();
+      } else if (m.hasUpdate()) {
+        return m.getUpdate().getKey();
+      } else {
+        LOG.warn("Mutation {} does not have an operation type set.", m);
+        return Entity.getDefaultInstance().getKey();
+      }
+    }
+
     @ProcessElement
     public void processElement(ProcessContext c) throws Exception {
-      Mutation write = c.element();
-      int size = write.getSerializedSize();
+      Mutation mutation = c.element();
+      int size = mutation.getSerializedSize();
 
-      if (!uniqueMutations.add(c.element())) {
+      if (!uniqueMutationKeys.add(getKey(mutation))) {
         flushBatch();
       }
 
@@ -1579,7 +1594,8 @@ public class DatastoreV1 {
      * @throws DatastoreException if the commit fails or IOException or InterruptedException if
      *     backing off between retries fails.
      */
-    private void flushBatch() throws DatastoreException, IOException, InterruptedException {
+    private synchronized void flushBatch()
+        throws DatastoreException, IOException, InterruptedException {
       LOG.debug("Writing batch of {} mutations", mutations.size());
       Sleeper sleeper = Sleeper.DEFAULT;
       BackOff backoff = BUNDLE_WRITE_BACKOFF.backoff();
@@ -1654,7 +1670,7 @@ public class DatastoreV1 {
       }
       LOG.debug("Successfully wrote {} mutations", mutations.size());
       mutations.clear();
-      uniqueMutations.clear();
+      uniqueMutationKeys.clear();
       mutationsSize = 0;
     }
 

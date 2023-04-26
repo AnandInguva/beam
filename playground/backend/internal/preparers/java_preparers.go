@@ -16,17 +16,21 @@
 package preparers
 
 import (
-	"beam.apache.org/playground/backend/internal/logger"
-	"beam.apache.org/playground/backend/internal/utils"
 	"bufio"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
 	"regexp"
+
+	"beam.apache.org/playground/backend/internal/constants"
+	"beam.apache.org/playground/backend/internal/logger"
+	"beam.apache.org/playground/backend/internal/utils"
 )
 
 const (
+	bootstrapServerPattern            = "kafka_server:9092"
+	topicNamePattern                  = "dataset"
 	classWithPublicModifierPattern    = "public class "
 	classWithoutPublicModifierPattern = "class "
 	packagePattern                    = `^(package) (([\w]+\.)+[\w]+);`
@@ -35,7 +39,7 @@ const (
 	javaPublicClassNamePattern        = "public class (.*?) [{|implements(.*)]"
 	pipelineNamePattern               = `Pipeline\s([A-z|0-9_]*)\s=\sPipeline\.create`
 	graphSavePattern                  = "String dotString = org.apache.beam.runners.core.construction.renderer.PipelineDotRenderer.toDotString(%s);\n" +
-		"    try (java.io.PrintWriter out = new java.io.PrintWriter(\"Graph.dot\")) {\n      " +
+		"    try (java.io.PrintWriter out = new java.io.PrintWriter(\"graph.dot\")) {\n      " +
 		"		out.println(dotString);\n    " +
 		"	} catch (java.io.FileNotFoundException e) {\n" +
 		"      e.printStackTrace();\n    " +
@@ -43,17 +47,17 @@ const (
 		"%s.run"
 )
 
-//JavaPreparersBuilder facet of PreparersBuilder
+// JavaPreparersBuilder facet of PreparersBuilder
 type JavaPreparersBuilder struct {
 	PreparersBuilder
 }
 
-//JavaPreparers chains to type *PreparersBuilder and returns a *JavaPreparersBuilder
+// JavaPreparers chains to type *PreparersBuilder and returns a *JavaPreparersBuilder
 func (builder *PreparersBuilder) JavaPreparers() *JavaPreparersBuilder {
 	return &JavaPreparersBuilder{*builder}
 }
 
-//WithPublicClassRemover adds preparer to remove public class
+// WithPublicClassRemover adds preparer to remove public class
 func (builder *JavaPreparersBuilder) WithPublicClassRemover() *JavaPreparersBuilder {
 	removePublicClassPreparer := Preparer{
 		Prepare: removePublicClassModifier,
@@ -63,7 +67,7 @@ func (builder *JavaPreparersBuilder) WithPublicClassRemover() *JavaPreparersBuil
 	return builder
 }
 
-//WithPackageChanger adds preparer to change package
+// WithPackageChanger adds preparer to change package
 func (builder *JavaPreparersBuilder) WithPackageChanger() *JavaPreparersBuilder {
 	changePackagePreparer := Preparer{
 		Prepare: replace,
@@ -73,7 +77,7 @@ func (builder *JavaPreparersBuilder) WithPackageChanger() *JavaPreparersBuilder 
 	return builder
 }
 
-//WithPackageRemover adds preparer to remove package
+// WithPackageRemover adds preparer to remove package
 func (builder *JavaPreparersBuilder) WithPackageRemover() *JavaPreparersBuilder {
 	removePackagePreparer := Preparer{
 		Prepare: replace,
@@ -83,7 +87,7 @@ func (builder *JavaPreparersBuilder) WithPackageRemover() *JavaPreparersBuilder 
 	return builder
 }
 
-//WithFileNameChanger adds preparer to remove package
+// WithFileNameChanger adds preparer to remove package
 func (builder *JavaPreparersBuilder) WithFileNameChanger() *JavaPreparersBuilder {
 	unitTestFileNameChanger := Preparer{
 		Prepare: utils.ChangeTestFileName,
@@ -93,13 +97,47 @@ func (builder *JavaPreparersBuilder) WithFileNameChanger() *JavaPreparersBuilder
 	return builder
 }
 
-//WithGraphHandler adds code to save the graph
+// WithGraphHandler adds code to save the graph
 func (builder *JavaPreparersBuilder) WithGraphHandler() *JavaPreparersBuilder {
 	graphCodeAdder := Preparer{
 		Prepare: addCodeToSaveGraph,
 		Args:    []interface{}{builder.filePath},
 	}
 	builder.AddPreparer(graphCodeAdder)
+	return builder
+}
+
+// WithBootstrapServersChanger adds preparer to replace tokens in the example source to correct values
+func (builder *JavaPreparersBuilder) WithBootstrapServersChanger() *JavaPreparersBuilder {
+	if len(builder.params) == 0 {
+		return builder
+	}
+	bootstrapServerVal, ok := builder.params[constants.BootstrapServerKey]
+	if !ok {
+		return builder
+	}
+	bootstrapServersChanger := Preparer{
+		Prepare: replace,
+		Args:    []interface{}{builder.filePath, bootstrapServerPattern, bootstrapServerVal},
+	}
+	builder.AddPreparer(bootstrapServersChanger)
+	return builder
+}
+
+// WithTopicNameChanger adds preparer to replace tokens in the example source to correct values
+func (builder *JavaPreparersBuilder) WithTopicNameChanger() *JavaPreparersBuilder {
+	if len(builder.params) == 0 {
+		return builder
+	}
+	topicNameVal, ok := builder.params[constants.TopicNameKey]
+	if !ok {
+		return builder
+	}
+	topicNameChanger := Preparer{
+		Prepare: replace,
+		Args:    []interface{}{builder.filePath, topicNamePattern, topicNameVal},
+	}
+	builder.AddPreparer(topicNameChanger)
 	return builder
 }
 
@@ -124,7 +162,9 @@ func GetJavaPreparers(builder *PreparersBuilder, isUnitTest bool, isKata bool) {
 		builder.JavaPreparers().
 			WithPublicClassRemover().
 			WithPackageChanger().
-			WithGraphHandler()
+			WithGraphHandler().
+			WithBootstrapServersChanger().
+			WithTopicNameChanger()
 	}
 	if isUnitTest {
 		builder.JavaPreparers().
@@ -135,7 +175,9 @@ func GetJavaPreparers(builder *PreparersBuilder, isUnitTest bool, isKata bool) {
 		builder.JavaPreparers().
 			WithPublicClassRemover().
 			WithPackageRemover().
-			WithGraphHandler()
+			WithGraphHandler().
+			WithBootstrapServersChanger().
+			WithTopicNameChanger()
 	}
 }
 

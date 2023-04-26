@@ -28,13 +28,9 @@ import com.google.api.services.bigquery.model.TableReference;
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.api.services.bigquery.model.TableSchema;
 import com.google.auto.value.AutoValue;
-import com.google.protobuf.Descriptors.Descriptor;
-import com.google.protobuf.Descriptors.FieldDescriptor;
-import com.google.protobuf.Descriptors.FieldDescriptor.Type;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -61,8 +57,10 @@ import org.apache.beam.sdk.annotations.Experimental.Kind;
 import org.apache.beam.sdk.schemas.Schema;
 import org.apache.beam.sdk.schemas.Schema.Field;
 import org.apache.beam.sdk.schemas.Schema.FieldType;
+import org.apache.beam.sdk.schemas.Schema.LogicalType;
 import org.apache.beam.sdk.schemas.Schema.TypeName;
 import org.apache.beam.sdk.schemas.logicaltypes.EnumerationType;
+import org.apache.beam.sdk.schemas.logicaltypes.PassThroughLogicalType;
 import org.apache.beam.sdk.schemas.logicaltypes.SqlTypes;
 import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.SerializableFunctions;
@@ -72,7 +70,6 @@ import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Immutabl
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableSet;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Iterables;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Lists;
-import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.hash.Hashing;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.io.BaseEncoding;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.DateTime;
@@ -261,8 +258,8 @@ public class BigQueryUtils {
           .put(SqlTypes.DATE.getIdentifier(), StandardSQLTypeName.DATE)
           .put(SqlTypes.TIME.getIdentifier(), StandardSQLTypeName.TIME)
           .put(SqlTypes.DATETIME.getIdentifier(), StandardSQLTypeName.DATETIME)
+          .put(SqlTypes.TIMESTAMP.getIdentifier(), StandardSQLTypeName.TIMESTAMP)
           .put("SqlTimeWithLocalTzType", StandardSQLTypeName.TIME)
-          .put("SqlCharType", StandardSQLTypeName.STRING)
           .put("Enum", StandardSQLTypeName.STRING)
           .build();
 
@@ -280,6 +277,9 @@ public class BigQueryUtils {
           Preconditions.checkArgumentNotNull(fieldType.getLogicalType());
       ret = BEAM_TO_BIGQUERY_LOGICAL_MAPPING.get(logicalType.getIdentifier());
       if (ret == null) {
+        if (logicalType instanceof PassThroughLogicalType) {
+          return toStandardSQLTypeName(logicalType.getBaseType());
+        }
         throw new IllegalArgumentException(
             "Cannot convert Beam logical type: "
                 + logicalType.getIdentifier()
@@ -512,7 +512,7 @@ public class BigQueryUtils {
     return BigQueryAvroUtils.convertGenericRecordToTableRow(record, tableSchema);
   }
 
-  /** Convert a BigQuery TableRow to a Beam Row. */
+  /** Convert a Beam Row to a BigQuery TableRow. */
   public static TableRow toTableRow(Row row) {
     TableRow output = new TableRow();
     for (int i = 0; i < row.getFieldCount(); i++) {
@@ -567,12 +567,18 @@ public class BigQueryUtils {
 
       case INT16:
       case INT32:
-      case INT64:
       case FLOAT:
-      case DOUBLE:
-      case STRING:
       case BOOLEAN:
+      case DOUBLE:
+        // The above types have native representations in JSON for all their
+        // possible values.
+        return fieldValue.toString();
+
+      case STRING:
+      case INT64:
       case DECIMAL:
+        // The above types must be cast to string to be safely encoded in
+        // JSON (due to JSON's float-based representation of all numbers).
         return fieldValue.toString();
 
       case BYTES:
@@ -639,7 +645,7 @@ public class BigQueryUtils {
         return null;
       } else {
         throw new IllegalArgumentException(
-            "Received null value for non-nullable field " + field.getName());
+            "Received null value for non-nullable field \"" + field.getName() + "\"");
       }
     }
 
@@ -680,7 +686,14 @@ public class BigQueryUtils {
       if (JSON_VALUE_PARSERS.containsKey(fieldType.getTypeName())) {
         return JSON_VALUE_PARSERS.get(fieldType.getTypeName()).apply(jsonBQString);
       } else if (fieldType.isLogicalType(SqlTypes.DATETIME.getIdentifier())) {
-        return LocalDateTime.parse(jsonBQString, BIGQUERY_DATETIME_FORMATTER);
+        try {
+          // Handle if datetime value is in micros ie. 123456789
+          Long value = Long.parseLong(jsonBQString);
+          return CivilTimeEncoder.decodePacked64DatetimeMicrosAsJavaTime(value);
+        } catch (NumberFormatException e) {
+          // Handle as a String, ie. "2023-02-16 12:00:00"
+          return LocalDateTime.parse(jsonBQString, BIGQUERY_DATETIME_FORMATTER);
+        }
       } else if (fieldType.isLogicalType(SqlTypes.DATE.getIdentifier())) {
         return LocalDate.parse(jsonBQString);
       } else if (fieldType.isLogicalType(SqlTypes.TIME.getIdentifier())) {
@@ -712,7 +725,6 @@ public class BigQueryUtils {
 
   // TODO: BigQuery shouldn't know about SQL internal logical types.
   private static final Set<String> SQL_DATE_TIME_TYPES = ImmutableSet.of("SqlTimeWithLocalTzType");
-  private static final Set<String> SQL_STRING_TYPES = ImmutableSet.of("SqlCharType");
 
   /**
    * Tries to convert an Avro decoded value to a Beam field value based on the target type of the
@@ -760,7 +772,9 @@ public class BigQueryUtils {
       case ARRAY:
         return convertAvroArray(beamFieldType, avroValue, options);
       case LOGICAL_TYPE:
-        String identifier = beamFieldType.getLogicalType().getIdentifier();
+        LogicalType<?, ?> logicalType = beamFieldType.getLogicalType();
+        assert logicalType != null;
+        String identifier = logicalType.getIdentifier();
         if (SqlTypes.DATE.getIdentifier().equals(identifier)) {
           return convertAvroDate(avroValue);
         } else if (SqlTypes.TIME.getIdentifier().equals(identifier)) {
@@ -778,8 +792,8 @@ public class BigQueryUtils {
                   String.format(
                       "Unknown timestamp truncation option: %s", options.getTruncateTimestamps()));
           }
-        } else if (SQL_STRING_TYPES.contains(identifier)) {
-          return convertAvroPrimitiveTypes(TypeName.STRING, avroValue);
+        } else if (logicalType instanceof PassThroughLogicalType) {
+          return convertAvroFormat(logicalType.getBaseType(), avroValue, options);
         } else {
           throw new RuntimeException("Unknown logical type " + identifier);
         }
@@ -1023,29 +1037,5 @@ public class BigQueryUtils {
    */
   public static ServiceCallMetric writeCallMetric(TableReference tableReference) {
     return callMetricForMethod(tableReference, "BigQueryBatchWrite");
-  }
-
-  /**
-   * Hashes a schema descriptor using a deterministic hash function.
-   *
-   * <p>Warning! These hashes are encoded into messages, so changing this function will cause
-   * pipelines to get stuck on update!
-   */
-  public static long hashSchemaDescriptorDeterministic(Descriptor descriptor) {
-    long hashCode = 0;
-    for (FieldDescriptor fieldDescriptor : descriptor.getFields()) {
-      hashCode +=
-          Hashing.murmur3_32()
-              .hashString(fieldDescriptor.getName(), StandardCharsets.UTF_8)
-              .asInt();
-      hashCode += Hashing.murmur3_32().hashInt(fieldDescriptor.isRepeated() ? 1 : 0).asInt();
-      hashCode += Hashing.murmur3_32().hashInt(fieldDescriptor.isRequired() ? 1 : 0).asInt();
-      Type type = fieldDescriptor.getType();
-      hashCode += Hashing.murmur3_32().hashInt(type.ordinal()).asInt();
-      if (type.equals(Type.MESSAGE)) {
-        hashCode += hashSchemaDescriptorDeterministic(fieldDescriptor.getMessageType());
-      }
-    }
-    return hashCode;
   }
 }

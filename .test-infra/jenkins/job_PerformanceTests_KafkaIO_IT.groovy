@@ -35,7 +35,7 @@ String HIGH_RANGE_PORT = "32767"
  */
 job(jobName) {
   common.setTopLevelMainJobProperties(delegate, 'master', 120)
-  common.setAutoJob(delegate, 'H H/6 * * *')
+  common.setAutoJob(delegate, 'H H/12 * * *')
   common.enablePhraseTriggeringFromPullRequest(
       delegate,
       'Java KafkaIO Performance Test',
@@ -75,7 +75,7 @@ job(jobName) {
     sourceOptions                : """
                                      {
                                        "numRecords": "100000000",
-                                       "keySizeBytes": "1",
+                                       "keySizeBytes": "10",
                                        "valueSizeBytes": "90"
                                      }
                                    """.trim().replaceAll("\\s", ""),
@@ -86,42 +86,27 @@ job(jobName) {
     influxHost                   : InfluxDBCredentialsHelper.InfluxDBHostUrl,
     kafkaBootstrapServerAddresses: "\$KAFKA_BROKER_0:\$KAFKA_SERVICE_PORT_0,\$KAFKA_BROKER_1:\$KAFKA_SERVICE_PORT_1," +
     "\$KAFKA_BROKER_2:\$KAFKA_SERVICE_PORT_2", //KAFKA_BROKER_ represents IP and KAFKA_SERVICE_ port of outside services
-    kafkaTopic                   : 'beam',
-    readTimeout                  : '900',
+    kafkaTopic                   : 'beam-batch',
+    readTimeout                  : '1800',
     numWorkers                   : '5',
     autoscalingAlgorithm         : 'NONE'
   ]
 
   // We are using a smaller number of records for streaming test since streaming read is much slower
   // than batch read.
-  Map dataflowRunnerV2SdfWrapperPipelineOptions = pipelineOptions + [
-    sourceOptions                : """
-                                     {
-                                       "numRecords": "100000",
-                                       "keySizeBytes": "1",
-                                       "valueSizeBytes": "90"
-                                     }
-                                  """.trim().replaceAll("\\s", ""),
-    kafkaTopic                   : 'beam-runnerv2',
-    bigQueryTable                : 'kafkaioit_results_sdf_wrapper',
-    influxMeasurement            : 'kafkaioit_results_sdf_wrapper',
-    // TODO(https://github.com/apache/beam/issues/20806) remove shuffle_mode=appliance with runner v2 once issue is resolved.
-    experiments                  : 'use_runner_v2,shuffle_mode=appliance,use_unified_worker',
-  ]
-
   Map dataflowRunnerV2SdfPipelineOptions = pipelineOptions + [
     sourceOptions                : """
                                      {
-                                       "numRecords": "100000",
-                                       "keySizeBytes": "1",
+                                       "numRecords": "100000000",
+                                       "keySizeBytes": "10",
                                        "valueSizeBytes": "90"
                                      }
                                    """.trim().replaceAll("\\s", ""),
     kafkaTopic                   : 'beam-sdf',
+    readTimeout                  : '1500',
     bigQueryTable                : 'kafkaioit_results_runner_v2',
     influxMeasurement            : 'kafkaioit_results_runner_v2',
-    // TODO(https://github.com/apache/beam/issues/20806) remove shuffle_mode=appliance with runner v2 once issue is resolved.
-    experiments                  : 'use_runner_v2,shuffle_mode=appliance,use_unified_worker',
+    experiments                  : 'use_runner_v2,use_unified_worker',
   ]
 
   steps {
@@ -129,25 +114,17 @@ job(jobName) {
       rootBuildScriptDir(common.checkoutDir)
       common.setGradleSwitches(delegate)
       switches("--info")
-      switches("-DintegrationTestPipelineOptions=\'${common.joinOptionsWithNestedJsonValues(pipelineOptions)}\'")
-      switches("-DintegrationTestRunner=dataflow")
-      tasks(":sdks:java:io:kafka:integrationTest --tests org.apache.beam.sdk.io.kafka.KafkaIOIT.testKafkaIOReadsAndWritesCorrectlyInBatch")
-    }
-    gradle {
-      rootBuildScriptDir(common.checkoutDir)
-      common.setGradleSwitches(delegate)
-      switches("--info")
-      switches("-DintegrationTestPipelineOptions=\'${common.joinOptionsWithNestedJsonValues(dataflowRunnerV2SdfWrapperPipelineOptions)}\'")
-      switches("-DintegrationTestRunner=dataflow")
-      tasks(":sdks:java:io:kafka:integrationTest --tests org.apache.beam.sdk.io.kafka.KafkaIOIT.testKafkaIOReadsAndWritesCorrectlyInStreaming")
-    }
-    gradle {
-      rootBuildScriptDir(common.checkoutDir)
-      common.setGradleSwitches(delegate)
-      switches("--info")
       switches("-DintegrationTestPipelineOptions=\'${common.joinOptionsWithNestedJsonValues(dataflowRunnerV2SdfPipelineOptions)}\'")
       switches("-DintegrationTestRunner=dataflow")
       tasks(":sdks:java:io:kafka:integrationTest --tests org.apache.beam.sdk.io.kafka.KafkaIOIT.testKafkaIOReadsAndWritesCorrectlyInStreaming")
+    }
+    gradle {
+      rootBuildScriptDir(common.checkoutDir)
+      common.setGradleSwitches(delegate)
+      switches("--info")
+      switches("-DintegrationTestPipelineOptions=\'${common.joinOptionsWithNestedJsonValues(pipelineOptions)}\'")
+      switches("-DintegrationTestRunner=dataflow")
+      tasks(":sdks:java:io:kafka:integrationTest --tests org.apache.beam.sdk.io.kafka.KafkaIOIT.testKafkaIOReadsAndWritesCorrectlyInBatch")
     }
   }
 }

@@ -33,8 +33,10 @@ export interface WindowFn<W extends Window> {
   toProto: () => runnerApi.FunctionSpec;
   isMerging: () => boolean;
   assignsToOneWindow: () => boolean;
+  beamName?: string;
 }
 
+/** @internal */
 export function createWindowingStrategyProto(
   pipeline: Pipeline,
   windowFn: WindowFn<any>,
@@ -67,6 +69,13 @@ export function createWindowingStrategyProto(
   return result;
 }
 
+/**
+ * returns a PTransform that takes an input PCollection and returns an output
+ * PCollection with the same elements but a new windowing according to the
+ * provided WindowFn.
+ *
+ * See https://beam.apache.org/documentation/programming-guide/#windowing
+ */
 export function windowInto<T, W extends Window>(
   windowFn: WindowFn<W>,
   windowingStrategyBase: runnerApi.WindowingStrategy | undefined = undefined

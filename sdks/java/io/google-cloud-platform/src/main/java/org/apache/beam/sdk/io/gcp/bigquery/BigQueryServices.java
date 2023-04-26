@@ -41,6 +41,7 @@ import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
 import com.google.cloud.bigquery.storage.v1.ReadSession;
 import com.google.cloud.bigquery.storage.v1.SplitReadStreamRequest;
 import com.google.cloud.bigquery.storage.v1.SplitReadStreamResponse;
+import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.cloud.bigquery.storage.v1.WriteStream;
 import com.google.protobuf.Descriptors.Descriptor;
 import java.io.IOException;
@@ -204,12 +205,15 @@ public interface BigQueryServices extends Serializable {
     WriteStream createWriteStream(String tableUrn, WriteStream.Type type)
         throws IOException, InterruptedException;
 
+    @Nullable
+    WriteStream getWriteStream(String writeStream);
+
     /**
      * Create an append client for a given Storage API write stream. The stream must be created
      * first.
      */
-    StreamAppendClient getStreamAppendClient(String streamName, Descriptor descriptor)
-        throws Exception;
+    StreamAppendClient getStreamAppendClient(
+        String streamName, Descriptor descriptor, boolean useConnectionPool) throws Exception;
 
     /** Flush a given stream up to the given offset. The stream must have type BUFFERED. */
     ApiFuture<FlushRowsResponse> flush(String streamName, long flushOffset)
@@ -229,6 +233,10 @@ public interface BigQueryServices extends Serializable {
   interface StreamAppendClient extends AutoCloseable {
     /** Append rows to a Storage API write stream at the given offset. */
     ApiFuture<AppendRowsResponse> appendRows(long offset, ProtoRows rows) throws Exception;
+
+    /** If the table schema has been updated, returns the new schema. Otherwise returns null. */
+    @Nullable
+    TableSchema getUpdatedSchema();
 
     /**
      * If the previous call to appendRows blocked due to flow control, returns how long the call

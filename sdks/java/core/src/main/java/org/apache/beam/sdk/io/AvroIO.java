@@ -30,6 +30,7 @@ import java.nio.channels.WritableByteChannel;
 import java.util.Map;
 import org.apache.avro.Schema;
 import org.apache.avro.file.CodecFactory;
+import org.apache.avro.file.DataFileConstants;
 import org.apache.avro.file.DataFileWriter;
 import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.avro.generic.GenericRecord;
@@ -327,10 +328,16 @@ import org.joda.time.Duration;
  * events.apply("WriteAvros", AvroIO.<Integer>writeCustomTypeToGenericRecords()
  *     .to(new UserDynamicAvroDestinations(userToSchemaMap)));
  * }</pre>
+ *
+ * @deprecated Avro related classes are deprecated in module <code>beam-sdks-java-core</code> and
+ *     will be eventually removed. Please, migrate to a new module <code>
+ *     beam-sdks-java-extensions-avro</code> by importing <code>
+ *     org.apache.beam.sdk.extensions.avro.io.AvroIO</code> instead of this one.
  */
 @SuppressWarnings({
   "nullness" // TODO(https://github.com/apache/beam/issues/20497)
 })
+@Deprecated
 public class AvroIO {
   /**
    * Reads records of the given type from an Avro file (or multiple Avro files matching a pattern).
@@ -571,7 +578,8 @@ public class AvroIO {
         .setCodec(TypedWrite.DEFAULT_SERIALIZABLE_CODEC)
         .setMetadata(ImmutableMap.of())
         .setWindowedWrites(false)
-        .setNoSpilling(false);
+        .setNoSpilling(false)
+        .setSyncInterval(DataFileConstants.DEFAULT_SYNC_INTERVAL);
   }
 
   @Experimental(Kind.SCHEMAS)
@@ -805,8 +813,11 @@ public class AvroIO {
       abstract ReadFiles<T> build();
     }
 
-    @VisibleForTesting
-    ReadFiles<T> withDesiredBundleSizeBytes(long desiredBundleSizeBytes) {
+    /**
+     * Set a value for the bundle size for parallel reads. Default is 64 MB. You may want to use a
+     * lower value (e.g. 1 MB) for streaming applications.
+     */
+    public ReadFiles<T> withDesiredBundleSizeBytes(long desiredBundleSizeBytes) {
       return toBuilder().setDesiredBundleSizeBytes(desiredBundleSizeBytes).build();
     }
 
@@ -919,8 +930,11 @@ public class AvroIO {
           getMatchConfiguration().continuously(pollInterval, terminationCondition));
     }
 
-    @VisibleForTesting
-    ReadAll<T> withDesiredBundleSizeBytes(long desiredBundleSizeBytes) {
+    /**
+     * Set a value for the bundle size for parallel reads. Default is 64 MB. You may want to use a
+     * lower value (e.g. 1 MB) for streaming applications.
+     */
+    public ReadAll<T> withDesiredBundleSizeBytes(long desiredBundleSizeBytes) {
       return toBuilder().setDesiredBundleSizeBytes(desiredBundleSizeBytes).build();
     }
 
@@ -1161,8 +1175,11 @@ public class AvroIO {
       return toBuilder().setFileExceptionHandler(exceptionHandler).build();
     }
 
-    @VisibleForTesting
-    ParseFiles<T> withDesiredBundleSizeBytes(long desiredBundleSizeBytes) {
+    /**
+     * Set a value for the bundle size for parallel reads. Default is 64 MB. You may want to use a
+     * lower value (e.g. 1 MB) for streaming applications.
+     */
+    public ParseFiles<T> withDesiredBundleSizeBytes(long desiredBundleSizeBytes) {
       return toBuilder().setDesiredBundleSizeBytes(desiredBundleSizeBytes).build();
     }
 
@@ -1270,8 +1287,11 @@ public class AvroIO {
       return toBuilder().setCoder(coder).build();
     }
 
-    @VisibleForTesting
-    ParseAll<T> withDesiredBundleSizeBytes(long desiredBundleSizeBytes) {
+    /**
+     * Set a value for the bundle size for parallel reads. Default is 64 MB. You may want to use a
+     * lower value (e.g. 1 MB) for streaming applications.
+     */
+    public ParseAll<T> withDesiredBundleSizeBytes(long desiredBundleSizeBytes) {
       return toBuilder().setDesiredBundleSizeBytes(desiredBundleSizeBytes).build();
     }
 
@@ -1318,6 +1338,8 @@ public class AvroIO {
 
     abstract boolean getGenericRecords();
 
+    abstract int getSyncInterval();
+
     abstract @Nullable Schema getSchema();
 
     abstract boolean getWindowedWrites();
@@ -1361,6 +1383,8 @@ public class AvroIO {
           @Nullable String shardTemplate);
 
       abstract Builder<UserT, DestinationT, OutputT> setGenericRecords(boolean genericRecords);
+
+      abstract Builder<UserT, DestinationT, OutputT> setSyncInterval(int syncInterval);
 
       abstract Builder<UserT, DestinationT, OutputT> setSchema(Schema schema);
 
@@ -1471,6 +1495,14 @@ public class AvroIO {
       return toBuilder()
           .setDynamicDestinations((DynamicAvroDestinations) dynamicDestinations)
           .build();
+    }
+
+    /**
+     * Sets the approximate number of uncompressed bytes to write in each block for the AVRO
+     * container format.
+     */
+    public TypedWrite<UserT, DestinationT, OutputT> withSyncInterval(int syncInterval) {
+      return toBuilder().setSyncInterval(syncInterval).build();
     }
 
     /**
@@ -1599,7 +1631,7 @@ public class AvroIO {
       }
       checkArgument(
           badKeys.isEmpty(),
-          "Metadata value type must be one of String, Long, or byte[]. Found {}",
+          "Metadata value type must be one of String, Long, or byte[]. Found %s",
           badKeys);
       return toBuilder().setMetadata(ImmutableMap.copyOf(metadata)).build();
     }
@@ -1659,7 +1691,11 @@ public class AvroIO {
       }
       WriteFiles<UserT, DestinationT, OutputT> write =
           WriteFiles.to(
-              new AvroSink<>(tempDirectory, resolveDynamicDestinations(), getGenericRecords()));
+              new AvroSink<>(
+                  tempDirectory,
+                  resolveDynamicDestinations(),
+                  getGenericRecords(),
+                  getSyncInterval()));
       if (getNumShards() > 0) {
         write = write.withNumShards(getNumShards());
       }
@@ -1742,10 +1778,16 @@ public class AvroIO {
       return new Write<>(inner.to(dynamicDestinations).withFormatFunction(null));
     }
 
+    /** See {@link TypedWrite#withSyncInterval}. */
+    public Write<T> withSyncInterval(int syncInterval) {
+      return new Write<>(inner.withSyncInterval(syncInterval));
+    }
+
     /** See {@link TypedWrite#withSchema}. */
     public Write<T> withSchema(Schema schema) {
       return new Write<>(inner.withSchema(schema));
     }
+
     /** See {@link TypedWrite#withTempDirectory(ValueProvider)}. */
     @Experimental(Kind.FILESYSTEM)
     public Write<T> withTempDirectory(ValueProvider<ResourceId> tempDirectory) {

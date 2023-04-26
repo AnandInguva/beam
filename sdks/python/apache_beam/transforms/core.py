@@ -28,6 +28,7 @@ import sys
 import traceback
 import types
 import typing
+from itertools import dropwhile
 
 from apache_beam import coders
 from apache_beam import pvalue
@@ -50,6 +51,7 @@ from apache_beam.transforms.sideinputs import get_sideinput_index
 from apache_beam.transforms.userstate import StateSpec
 from apache_beam.transforms.userstate import TimerSpec
 from apache_beam.transforms.window import GlobalWindows
+from apache_beam.transforms.window import SlidingWindows
 from apache_beam.transforms.window import TimestampCombiner
 from apache_beam.transforms.window import TimestampedValue
 from apache_beam.transforms.window import WindowedValue
@@ -315,6 +317,9 @@ class RestrictionProvider(object):
     of the restriction.
 
     The return value must be non-negative.
+
+    Must be thread safe. Will be invoked concurrently during bundle processing
+    due to runner initiated splitting and progress estimation.
 
     This API is required to be implemented.
     """
@@ -757,19 +762,19 @@ class DoFn(WithTypeHints, HasDisplayData, urns.RunnerApiFn):
 
   @property
   def _process_defined(self) -> bool:
-    # Check if this DoFn's process method has heen overriden
+    # Check if this DoFn's process method has been overridden
     # Note that we retrieve the __func__ attribute, if it exists, to get the
     # underlying function from the bound method.
-    # If __func__ doesn't exist, self.process was likely overriden with a free
+    # If __func__ doesn't exist, self.process was likely overridden with a free
     # function, as in CallableWrapperDoFn.
     return getattr(self.process, '__func__', self.process) != DoFn.process
 
   @property
   def _process_batch_defined(self) -> bool:
-    # Check if this DoFn's process_batch method has heen overriden
+    # Check if this DoFn's process_batch method has been overridden
     # Note that we retrieve the __func__ attribute, if it exists, to get the
     # underlying function from the bound method.
-    # If __func__ doesn't exist, self.process_batch was likely overriden with
+    # If __func__ doesn't exist, self.process_batch was likely overridden with
     # a free function.
     return getattr(
         self.process_batch, '__func__',
@@ -843,7 +848,9 @@ class DoFn(WithTypeHints, HasDisplayData, urns.RunnerApiFn):
     else:
       raise TypeError(
           "Expected Iterator in return type annotation for "
-          f"{method!r}, did you mean Iterator[{return_type}]?")
+          f"{method!r}, did you mean Iterator[{return_type}]? Note Beam DoFn "
+          "process and process_batch methods are expected to produce "
+          "generators - they should 'yield' rather than 'return'.")
 
   def get_output_batch_type(
       self, input_element_type
@@ -1381,6 +1388,59 @@ class CallableWrapperPartitionFn(PartitionFn):
     return self._fn(element, num_partitions, *args, **kwargs)
 
 
+def _get_function_body_without_inners(func):
+  source_lines = inspect.getsourcelines(func)[0]
+  source_lines = dropwhile(lambda x: x.startswith("@"), source_lines)
+  def_line = next(source_lines).strip()
+  if def_line.startswith("def ") and def_line.endswith(":"):
+    first_line = next(source_lines)
+    indentation = len(first_line) - len(first_line.lstrip())
+    final_lines = [first_line[indentation:]]
+
+    skip_inner_def = False
+    if first_line[indentation:].startswith("def "):
+      skip_inner_def = True
+    for line in source_lines:
+      line_indentation = len(line) - len(line.lstrip())
+
+      if line[indentation:].startswith("def "):
+        skip_inner_def = True
+        continue
+
+      if skip_inner_def and line_indentation == indentation:
+        skip_inner_def = False
+
+      if skip_inner_def and line_indentation > indentation:
+        continue
+      final_lines.append(line[indentation:])
+
+    return "".join(final_lines)
+  else:
+    return def_line.rsplit(":")[-1].strip()
+
+
+def _check_fn_use_yield_and_return(fn):
+  if isinstance(fn, types.BuiltinFunctionType):
+    return False
+  try:
+    source_code = _get_function_body_without_inners(fn)
+    has_yield = False
+    has_return = False
+    for line in source_code.split("\n"):
+      if line.lstrip().startswith("yield ") or line.lstrip().startswith(
+          "yield("):
+        has_yield = True
+      if line.lstrip().startswith("return ") or line.lstrip().startswith(
+          "return("):
+        has_return = True
+      if has_yield and has_return:
+        return True
+    return False
+  except Exception as e:
+    _LOGGER.debug(str(e))
+    return False
+
+
 class ParDo(PTransformWithSideInputs):
   """A :class:`ParDo` transform.
 
@@ -1420,6 +1480,14 @@ class ParDo(PTransformWithSideInputs):
 
     if not isinstance(self.fn, DoFn):
       raise TypeError('ParDo must be called with a DoFn instance.')
+
+    # DoFn.process cannot allow both return and yield
+    if _check_fn_use_yield_and_return(self.fn.process):
+      _LOGGER.warning(
+          'Using yield and return in the process method '
+          'of %s can lead to unexpected behavior, see:'
+          'https://github.com/apache/beam/issues/22969.',
+          self.fn.__class__)
 
     # Validate the DoFn by creating a DoFnSignature
     from apache_beam.runners.common import DoFnSignature
@@ -1511,10 +1579,17 @@ class ParDo(PTransformWithSideInputs):
             "process_batch method on {self.fn!r} does not have "
             "an input type annoation")
 
-      # Generate a batch converter to convert between the input type and the
-      # (batch) input type of process_batch
-      self.fn.input_batch_converter = BatchConverter.from_typehints(
-          element_type=input_element_type, batch_type=input_batch_type)
+      try:
+        # Generate a batch converter to convert between the input type and the
+        # (batch) input type of process_batch
+        self.fn.input_batch_converter = BatchConverter.from_typehints(
+            element_type=input_element_type, batch_type=input_batch_type)
+      except TypeError as e:
+        raise TypeError(
+            "Failed to find a BatchConverter for the input types of DoFn "
+            f"{self.fn!r} (element_type={input_element_type!r}, "
+            f"batch_type={input_batch_type!r}).") from e
+
     else:
       self.fn.input_batch_converter = None
 
@@ -1530,8 +1605,16 @@ class ParDo(PTransformWithSideInputs):
       # Generate a batch converter to convert between the output type and the
       # (batch) output type of process_batch
       output_element_type = self.infer_output_type(input_element_type)
-      self.fn.output_batch_converter = BatchConverter.from_typehints(
-          element_type=output_element_type, batch_type=output_batch_type)
+
+      try:
+        self.fn.output_batch_converter = BatchConverter.from_typehints(
+            element_type=output_element_type, batch_type=output_batch_type)
+      except TypeError as e:
+        raise TypeError(
+            "Failed to find a BatchConverter for the *output* types of DoFn "
+            f"{self.fn!r} (element_type={output_element_type!r}, "
+            f"batch_type={output_batch_type!r}). Maybe you need to override "
+            "DoFn.infer_output_type to set the output element type?") from e
     else:
       self.fn.output_batch_converter = None
 
@@ -2642,6 +2725,7 @@ class CombineValues(PTransformWithSideInputs):
 
 class CombineValuesDoFn(DoFn):
   """DoFn for performing per-key Combine transforms."""
+
   def __init__(
       self,
       input_pcoll_type,
@@ -2704,6 +2788,7 @@ class CombineValuesDoFn(DoFn):
 
 
 class _CombinePerKeyWithHotKeyFanout(PTransform):
+
   def __init__(
       self,
       combine_fn,  # type: CombineFn
@@ -2725,6 +2810,11 @@ class _CombinePerKeyWithHotKeyFanout(PTransform):
     from apache_beam.transforms.trigger import AccumulationMode
     combine_fn = self._combine_fn
     fanout_fn = self._fanout_fn
+
+    if isinstance(pcoll.windowing.windowfn, SlidingWindows):
+      raise ValueError(
+          'CombinePerKey.with_hot_key_fanout does not yet work properly with '
+          'SlidingWindows. See: https://github.com/apache/beam/issues/20528')
 
     class SplitHotCold(DoFn):
       def start_bundle(self):
@@ -2913,11 +3003,12 @@ class GroupBy(PTransform):
   The GroupBy operation can be made into an aggregating operation by invoking
   its `aggregate_field` method.
   """
+
   def __init__(
       self,
       *fields,  # type: typing.Union[str, typing.Callable]
       **kwargs  # type: typing.Union[str, typing.Callable]
-    ):
+  ):
     if len(fields) == 1 and not kwargs:
       self._force_tuple_keys = False
       name = fields[0] if isinstance(fields[0], str) else 'key'
@@ -2940,7 +3031,7 @@ class GroupBy(PTransform):
       field,  # type: typing.Union[str, typing.Callable]
       combine_fn,  # type: typing.Union[typing.Callable, CombineFn]
       dest,  # type: str
-    ):
+  ):
     """Returns a grouping operation that also aggregates grouped values.
 
     Args:
@@ -2977,7 +3068,7 @@ class GroupBy(PTransform):
       expr = self._key_fields[0][1]
       return trivial_inference.infer_return_type(expr, [input_type])
     else:
-      return row_type.RowTypeConstraint([
+      return row_type.RowTypeConstraint.from_fields([
           (name, trivial_inference.infer_return_type(expr, [input_type]))
           for (name, expr) in self._key_fields
       ])
@@ -3028,7 +3119,7 @@ class _GroupAndAggregate(PTransform):
       field,  # type: typing.Union[str, typing.Callable]
       combine_fn,  # type: typing.Union[typing.Callable, CombineFn]
       dest,  # type: str
-      ):
+  ):
     field = _expr_to_callable(field, 0)
     return _GroupAndAggregate(
         self._grouping, list(self._aggregations) + [(field, combine_fn, dest)])
@@ -3070,10 +3161,12 @@ class Select(PTransform):
 
       pcoll | beam.Map(lambda x: beam.Row(a=x.a, b=foo(x)))
   """
-  def __init__(self,
-               *args,  # type: typing.Union[str, typing.Callable]
-               **kwargs  # type: typing.Union[str, typing.Callable]
-               ):
+
+  def __init__(
+      self,
+      *args,  # type: typing.Union[str, typing.Callable]
+      **kwargs  # type: typing.Union[str, typing.Callable]
+  ):
     self._fields = [(
         expr if isinstance(expr, str) else 'arg%02d' % ix,
         _expr_to_callable(expr, ix)) for (ix, expr) in enumerate(args)
@@ -3089,7 +3182,7 @@ class Select(PTransform):
                                 for name, expr in self._fields}))
 
   def infer_output_type(self, input_type):
-    return row_type.RowTypeConstraint([
+    return row_type.RowTypeConstraint.from_fields([
         (name, trivial_inference.infer_return_type(expr, [input_type]))
         for (name, expr) in self._fields
     ])
@@ -3138,8 +3231,8 @@ class Windowing(object):
   def __init__(self,
                windowfn,  # type: WindowFn
                triggerfn=None,  # type: typing.Optional[TriggerFn]
-               accumulation_mode=None,  # type: typing.Optional[beam_runner_api_pb2.AccumulationMode.Enum]
-               timestamp_combiner=None,  # type: typing.Optional[beam_runner_api_pb2.OutputTime.Enum]
+               accumulation_mode=None,  # type: typing.Optional[beam_runner_api_pb2.AccumulationMode.Enum.ValueType]
+               timestamp_combiner=None,  # type: typing.Optional[beam_runner_api_pb2.OutputTime.Enum.ValueType]
                allowed_lateness=0, # type: typing.Union[int, float]
                environment_id=None, # type: typing.Optional[str]
                ):

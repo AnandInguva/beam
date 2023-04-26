@@ -16,18 +16,15 @@
  * limitations under the License.
  */
 
+import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_gen/gen_l10n/app_localizations.dart';
-import 'package:collection/collection.dart';
-import 'package:playground/config/theme.dart';
-import 'package:playground/constants/colors.dart';
 import 'package:playground/constants/sizes.dart';
+import 'package:playground/modules/editor/components/pipeline_options_dropdown/pipeline_option_controller.dart';
 import 'package:playground/modules/editor/components/pipeline_options_dropdown/pipeline_option_label.dart';
-import 'package:playground/modules/editor/components/pipeline_options_dropdown/pipeline_option_model.dart';
-import 'package:playground/modules/editor/components/pipeline_options_dropdown/pipeline_options_text_field.dart';
+import 'package:playground/modules/editor/components/pipeline_options_dropdown/pipeline_options_row.dart';
 
 const kSpace = SizedBox(width: kMdSpacing);
-const kTextFieldHeight = 50.0;
 
 class PipelineOptionsForm extends StatelessWidget {
   final List<PipelineOptionController> options;
@@ -53,37 +50,11 @@ class PipelineOptionsForm extends StatelessWidget {
           ],
         ),
         ...options.mapIndexed(
-          (index, option) => Row(
-            children: [
-              Expanded(
-                child: SizedBox(
-                  height: kTextFieldHeight,
-                  child: PipelineOptionsTextField(controller: option.name),
-                ),
-              ),
-              kSpace,
-              Expanded(
-                child: SizedBox(
-                  height: kTextFieldHeight,
-                  child: PipelineOptionsTextField(controller: option.value),
-                ),
-              ),
-              SizedBox(
-                width: kIconSizeLg,
-                child: IconButton(
-                  iconSize: kIconSizeMd,
-                  splashRadius: kIconButtonSplashRadius,
-                  icon: const Icon(
-                    Icons.delete_outlined,
-                    color: kLightPrimary,
-                  ),
-                  color: ThemeColors.of(context).grey1Color,
-                  onPressed: () => onDelete(index),
-                ),
-              ),
-            ],
+          (index, controller) => PipelineOptionsRow(
+            controller: controller,
+            onDelete: () => onDelete(index),
           ),
-        )
+        ),
       ],
     );
   }

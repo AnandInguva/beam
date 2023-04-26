@@ -92,7 +92,7 @@ echo ${MASTER_BRANCH}
 echo "==============================================================="
 
 # Update master branch
-sh "$SCRIPT_DIR"/set_version.sh "$NEXT_VERSION_IN_BASE_BRANCH"
+bash "$SCRIPT_DIR"/set_version.sh "$NEXT_VERSION_IN_BASE_BRANCH"
 
 echo "==============Update master branch as following================"
 git diff
@@ -110,6 +110,7 @@ git add buildSrc/src/main/groovy/org/apache/beam/gradle/BeamModulePlugin.groovy
 git add gradle.properties
 git add sdks/python/apache_beam/version.py
 git add sdks/go/pkg/beam/core/core.go
+git add sdks/typescript/package.json
 git commit -m "Moving to ${NEXT_VERSION_IN_BASE_BRANCH}-SNAPSHOT on master branch."
 if git push origin ${MASTER_BRANCH}; then
   break

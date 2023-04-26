@@ -43,6 +43,7 @@ LOCAL_PYTHON_STAGING_DIR=python_staging_dir
 LOCAL_PYTHON_VIRTUALENV=${LOCAL_PYTHON_STAGING_DIR}/venv
 LOCAL_WEBSITE_UPDATE_DIR=website_update_dir
 LOCAL_PYTHON_DOC=python_doc
+LOCAL_TYPESCRIPT_DOC=typescript_doc
 LOCAL_JAVA_DOC=java_doc
 LOCAL_WEBSITE_REPO=beam_website_repo
 
@@ -77,6 +78,7 @@ RC_NUM=
 SIGNING_KEY=
 USER_GITHUB_ID=
 DEBUG=
+JAVA11_HOME=
 
 while [[ $# -gt 0 ]] ; do
   arg="$1"
@@ -101,6 +103,10 @@ while [[ $# -gt 0 ]] ; do
 
       --github-user)
       shift; USER_GITHUB_ID=$1; shift
+      ;;
+
+      --java11-home)
+      shift; JAVA11_HOME=$1; shift
       ;;
 
       *)
@@ -131,6 +137,12 @@ fi
 
 if [[ -z "$USER_GITHUB_ID" ]] ; then
   echo 'Please provide your github username(ID)'
+  usage
+  exit 1
+fi
+
+if [[ -z "$JAVA11_HOME" ]] ; then
+  echo 'Please provide Java 11 home. Required to build sdks/java/container/agent for Java 11+ containers.'
   usage
   exit 1
 fi
@@ -283,7 +295,8 @@ if [[ $confirmation = "y" ]]; then
     --repo-url "${GIT_REPO_BASE_URL}" \
     --rc-tag "${RC_TAG}" \
     --release-commit "${RELEASE_COMMIT}" \
-    --artifacts_dir "${SVN_ARTIFACTS_DIR}"
+    --artifacts_dir "${SVN_ARTIFACTS_DIR}" \
+    --rc_number "${RC_NUM}"
 
   cd "${SVN_ARTIFACTS_DIR}"
 
@@ -333,7 +346,7 @@ if [[ $confirmation = "y" ]]; then
   cd ${BEAM_ROOT_DIR}
   git checkout ${RC_TAG}
 
-  ./gradlew :pushAllDockerImages -Pdocker-pull-licenses -Pdocker-tag=${RELEASE}rc${RC_NUM}
+  ./gradlew :pushAllDockerImages -PisRelease -Pdocker-pull-licenses -Pdocker-tag=${RELEASE}rc${RC_NUM} -Pjava11Home=${JAVA11_HOME} --no-daemon --no-parallel
 
   wipe_local_clone_dir
 fi
@@ -350,6 +363,7 @@ if [[ $confirmation = "y" ]]; then
   mkdir -p ${LOCAL_WEBSITE_UPDATE_DIR}
   cd ${LOCAL_WEBSITE_UPDATE_DIR}
   mkdir -p ${LOCAL_PYTHON_DOC}
+  mkdir -p ${LOCAL_TYPESCRIPT_DOC}
   mkdir -p ${LOCAL_JAVA_DOC}
   mkdir -p ${LOCAL_WEBSITE_REPO}
 
@@ -368,11 +382,18 @@ if [[ $confirmation = "y" ]]; then
   GENERATED_PYDOC=~/${LOCAL_WEBSITE_UPDATE_DIR}/${LOCAL_PYTHON_DOC}/${BEAM_ROOT_DIR}/sdks/python/target/docs/_build
   rm -rf ${GENERATED_PYDOC}/.doctrees
 
+  echo "------------------Building Typescript Doc------------------------"
+  cd ~/${LOCAL_WEBSITE_UPDATE_DIR}/${LOCAL_TYPESCRIPT_DOC}
+  git clone --branch "${RC_TAG}" --depth 1 ${GIT_REPO_URL}
+  cd ${BEAM_ROOT_DIR}
+  cd sdks/typescript && npm ci && npm run docs
+  GENERATED_TYPEDOC=~/${LOCAL_WEBSITE_UPDATE_DIR}/${LOCAL_TYPESCRIPT_DOC}/${BEAM_ROOT_DIR}/sdks/typescript/docs
+
   echo "----------------------Building Java Doc----------------------"
   cd ~/${LOCAL_WEBSITE_UPDATE_DIR}/${LOCAL_JAVA_DOC}
   git clone --branch "${RC_TAG}" --depth 1 ${GIT_REPO_URL}
   cd ${BEAM_ROOT_DIR}
-  ./gradlew :sdks:java:javadoc:aggregateJavadoc
+  ./gradlew :sdks:java:javadoc:aggregateJavadoc -PisRelease --no-daemon --no-parallel
   GENERATE_JAVADOC=~/${LOCAL_WEBSITE_UPDATE_DIR}/${LOCAL_JAVA_DOC}/${BEAM_ROOT_DIR}/sdks/java/javadoc/build/docs/javadoc/
 
   echo "------------------Updating Release Docs---------------------"
@@ -393,6 +414,13 @@ if [[ $confirmation = "y" ]]; then
   # Update current symlink to point to the latest release
   unlink pydoc/current
   ln -s ${RELEASE} pydoc/current
+
+  echo "............Copying generated typedoc into beam-site.........."
+  mkdir -p typedoc
+  cp -r ${GENERATED_TYPEDOC} typedoc/${RELEASE}
+  # Update current symlink to point to the latest release
+  unlink typedoc/current | true
+  ln -s ${RELEASE} typedoc/current
 
   git add -A
   git commit -m "Update beam-site for release ${RELEASE}." -m "Content generated from commit ${RELEASE_COMMIT}."
@@ -422,4 +450,5 @@ if [[ $confirmation = "y" ]]; then
   echo "Finished v${RELEASE}-RC${RC_NUM} creation."
   rm -rf ~/${LOCAL_WEBSITE_UPDATE_DIR}/${LOCAL_JAVA_DOC}
   rm -rf ~/${LOCAL_WEBSITE_UPDATE_DIR}/${LOCAL_PYTHON_DOC}
+  rm -rf ~/${LOCAL_WEBSITE_UPDATE_DIR}/${LOCAL_TYPESCRIPT_DOC}
 fi

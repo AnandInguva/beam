@@ -33,7 +33,7 @@
    height: 96px;
    width: 100%;
    align-items: center;
-   //usually 30px, change for 0 until summit is over and banner is removed
+   // TODO - revert margin-bottom to 30px after summit is over when removing banner
    margin-bottom: 0;
    box-shadow: 0 4px 16px 0 rgba(0, 0, 0, 0.06);
    background-color: $color-white;

@@ -29,6 +29,8 @@ import org.apache.beam.fn.harness.Caches;
 import org.apache.beam.fn.harness.FnHarness;
 import org.apache.beam.model.pipeline.v1.Endpoints.ApiServiceDescriptor;
 import org.apache.beam.model.pipeline.v1.RunnerApi.Environment;
+import org.apache.beam.model.pipeline.v1.RunnerApi.StandardRunnerProtocols;
+import org.apache.beam.runners.core.construction.BeamUrns;
 import org.apache.beam.runners.fnexecution.artifact.ArtifactRetrievalService;
 import org.apache.beam.runners.fnexecution.control.ControlClientPool;
 import org.apache.beam.runners.fnexecution.control.ControlClientPool.Source;
@@ -43,6 +45,7 @@ import org.apache.beam.sdk.fn.server.InProcessServerFactory;
 import org.apache.beam.sdk.fn.server.ServerFactory;
 import org.apache.beam.sdk.fn.stream.OutboundObserverFactory;
 import org.apache.beam.sdk.options.PipelineOptions;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -94,7 +97,12 @@ public class EmbeddedEnvironmentFactory implements EnvironmentFactory {
   @SuppressWarnings("FutureReturnValueIgnored") // no need to monitor shutdown thread
   public RemoteEnvironment createEnvironment(Environment environment, String workerId)
       throws Exception {
-    ExecutorService executor = Executors.newSingleThreadExecutor();
+    ExecutorService executor =
+        Executors.newSingleThreadExecutor(
+            new ThreadFactoryBuilder()
+                .setDaemon(true)
+                .setNameFormat("CreateEnvironment-thread")
+                .build());
     Future<?> fnHarness =
         executor.submit(
             () -> {
@@ -102,7 +110,10 @@ public class EmbeddedEnvironmentFactory implements EnvironmentFactory {
                 FnHarness.main(
                     workerId,
                     options,
-                    Collections.emptySet(), // Runner capabilities.
+                    Collections.singleton(
+                        BeamUrns.getUrn(
+                            StandardRunnerProtocols.Enum
+                                .CONTROL_RESPONSE_ELEMENTS_EMBEDDING)), // Runner capabilities.
                     loggingServer.getApiServiceDescriptor(),
                     controlServer.getApiServiceDescriptor(),
                     null,

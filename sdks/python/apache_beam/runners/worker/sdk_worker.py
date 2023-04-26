@@ -58,9 +58,11 @@ from apache_beam.portability.api import beam_fn_api_pb2_grpc
 from apache_beam.portability.api import metrics_pb2
 from apache_beam.runners.worker import bundle_processor
 from apache_beam.runners.worker import data_plane
+from apache_beam.runners.worker import data_sampler
 from apache_beam.runners.worker import statesampler
 from apache_beam.runners.worker.channel_factory import GRPCChannelFactory
 from apache_beam.runners.worker.data_plane import PeriodicThread
+from apache_beam.runners.worker.statecache import CacheAware
 from apache_beam.runners.worker.statecache import StateCache
 from apache_beam.runners.worker.worker_id_interceptor import WorkerIdInterceptor
 from apache_beam.runners.worker.worker_status import FnApiWorkerStatusHandler
@@ -78,7 +80,6 @@ _VT = TypeVar('_VT')
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_BUNDLE_PROCESSOR_CACHE_SHUTDOWN_THRESHOLD_S = 60
-
 # The number of ProcessBundleRequest instruction ids the BundleProcessorCache
 # will remember for not running instructions.
 MAX_KNOWN_NOT_RUNNING_INSTRUCTIONS = 1000
@@ -169,12 +170,17 @@ class SdkHarness(object):
       status_address=None,  # type: Optional[str]
       # Heap dump through status api is disabled by default
       enable_heap_dump=False,  # type: bool
+      data_sampler=None,  # type: Optional[data_sampler.DataSampler]
+      # Unrecoverable SDK harness initialization error (if any)
+      # that should be reported to the runner when proocessing the first bundle.
+      deferred_exception=None, # type: Optional[Exception]
   ):
     # type: (...) -> None
     self._alive = True
     self._worker_index = 0
     self._worker_id = worker_id
     self._state_cache = StateCache(state_cache_size)
+    self._deferred_exception = deferred_exception
     options = [('grpc.max_receive_message_length', -1),
                ('grpc.max_send_message_length', -1)]
     if credentials is None:
@@ -195,6 +201,7 @@ class SdkHarness(object):
     self._state_handler_factory = GrpcStateHandlerFactory(
         self._state_cache, credentials)
     self._profiler_factory = profiler_factory
+    self.data_sampler = data_sampler
 
     def default_factory(id):
       # type: (str) -> beam_fn_api_pb2.ProcessBundleDescriptor
@@ -207,12 +214,16 @@ class SdkHarness(object):
     self._bundle_processor_cache = BundleProcessorCache(
         state_handler_factory=self._state_handler_factory,
         data_channel_factory=self._data_channel_factory,
-        fns=self._fns)
+        fns=self._fns,
+        data_sampler=self.data_sampler,
+    )
 
     if status_address:
       try:
         self._status_handler = FnApiWorkerStatusHandler(
-            status_address, self._bundle_processor_cache,
+            status_address,
+            self._bundle_processor_cache,
+            self._state_cache,
             enable_heap_dump)  # type: Optional[FnApiWorkerStatusHandler]
       except Exception:
         traceback_string = traceback.format_exc()
@@ -300,6 +311,8 @@ class SdkHarness(object):
 
   def _request_process_bundle(self, request):
     # type: (beam_fn_api_pb2.InstructionRequest) -> None
+    if self._deferred_exception:
+      raise self._deferred_exception
     self._bundle_processor_cache.activate(request.instruction_id)
     self._request_execute(request)
 
@@ -360,12 +373,30 @@ class SdkHarness(object):
     _LOGGER.debug(
         "Currently using %s threads." % len(self._worker_thread_pool._workers))
 
+  def _request_sample_data(self, request):
+    # type: (beam_fn_api_pb2.InstructionRequest) -> None
+
+    def get_samples(request):
+      # type: (beam_fn_api_pb2.InstructionRequest) -> beam_fn_api_pb2.InstructionResponse
+      samples: Dict[str, List[bytes]] = {}
+      if self.data_sampler:
+        samples = self.data_sampler.samples(request.sample_data.pcollection_ids)
+
+      sample_response = beam_fn_api_pb2.SampleDataResponse()
+      for pcoll_id in samples:
+        sample_response.element_samples[pcoll_id].elements.extend(
+            beam_fn_api_pb2.SampledElement(element=s)
+            for s in samples[pcoll_id])
+
+      return beam_fn_api_pb2.InstructionResponse(
+          instruction_id=request.instruction_id, sample_data=sample_response)
+
+    self._execute(lambda: get_samples(request), request)
+
   def create_worker(self):
     # type: () -> SdkWorker
     return SdkWorker(
-        self._bundle_processor_cache,
-        state_cache_metrics_fn=self._state_cache.get_monitoring_infos,
-        profiler_factory=self._profiler_factory)
+        self._bundle_processor_cache, profiler_factory=self._profiler_factory)
 
 
 class BundleProcessorCache(object):
@@ -394,7 +425,8 @@ class BundleProcessorCache(object):
       self,
       state_handler_factory,  # type: StateHandlerFactory
       data_channel_factory,  # type: data_plane.DataChannelFactory
-      fns  # type: MutableMapping[str, beam_fn_api_pb2.ProcessBundleDescriptor]
+      fns,  # type: MutableMapping[str, beam_fn_api_pb2.ProcessBundleDescriptor]
+      data_sampler=None,  # type: Optional[data_sampler.DataSampler]
   ):
     # type: (...) -> None
     self.fns = fns
@@ -412,6 +444,7 @@ class BundleProcessorCache(object):
         float)  # type: DefaultDict[str, float]
     self._schedule_periodic_shutdown()
     self._lock = threading.Lock()
+    self.data_sampler = data_sampler
 
   def register(self, bundle_descriptor):
     # type: (beam_fn_api_pb2.ProcessBundleDescriptor) -> None
@@ -459,7 +492,8 @@ class BundleProcessorCache(object):
         self.fns[bundle_descriptor_id],
         self.state_handler_factory.create_state_handler(
             self.fns[bundle_descriptor_id].state_api_service_descriptor),
-        self.data_channel_factory)
+        self.data_channel_factory,
+        self.data_sampler)
     with self._lock:
       self.active_bundle_processors[
         instruction_id] = bundle_descriptor_id, processor
@@ -581,12 +615,10 @@ class SdkWorker(object):
   def __init__(
       self,
       bundle_processor_cache,  # type: BundleProcessorCache
-      state_cache_metrics_fn=list,  # type: Callable[[], Iterable[metrics_pb2.MonitoringInfo]]
       profiler_factory=None,  # type: Optional[Callable[..., Profile]]
   ):
     # type: (...) -> None
     self.bundle_processor_cache = bundle_processor_cache
-    self.state_cache_metrics_fn = state_cache_metrics_fn
     self.profiler_factory = profiler_factory
 
   def do_instruction(self, request):
@@ -634,7 +666,6 @@ class SdkWorker(object):
           delayed_applications, requests_finalization = (
               bundle_processor.process_bundle(instruction_id))
           monitoring_infos = bundle_processor.monitoring_infos()
-          monitoring_infos.extend(self.state_cache_metrics_fn())
           response = beam_fn_api_pb2.InstructionResponse(
               instruction_id=instruction_id,
               process_bundle=beam_fn_api_pb2.ProcessBundleResponse(
@@ -878,7 +909,7 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
     for _, state_handler in self._state_handler_cache.items():
       state_handler.done()
     self._state_handler_cache.clear()
-    self._state_cache.evict_all()
+    self._state_cache.invalidate_all()
 
 
 class CachingStateHandler(metaclass=abc.ABCMeta):
@@ -1130,7 +1161,6 @@ class GlobalCachingStateHandler(CachingStateHandler):
     # for items cached at the bundle level.
     self._context.bundle_cache_token = bundle_id
     try:
-      self._state_cache.initialize_metrics()
       self._context.user_state_cache_token = user_state_cache_token
       with self._underlying.process_instruction_id(bundle_id):
         yield
@@ -1152,22 +1182,9 @@ class GlobalCachingStateHandler(CachingStateHandler):
       return self._lazy_iterator(state_key, coder)
     # Cache lookup
     cache_state_key = self._convert_to_cache_key(state_key)
-    cached_value = self._state_cache.get(cache_state_key, cache_token)
-    if cached_value is None:
-      # Cache miss, need to retrieve from the Runner
-      # Further size estimation or the use of the continuation token on the
-      # runner side could fall back to materializing one item at a time.
-      # https://jira.apache.org/jira/browse/BEAM-8297
-      materialized = cached_value = (
-          self._partially_cached_iterable(state_key, coder))
-      if isinstance(materialized, (list, self.ContinuationIterable)):
-        self._state_cache.put(cache_state_key, cache_token, materialized)
-      else:
-        _LOGGER.error(
-            "Uncacheable type %s for key %s. Not caching.",
-            materialized,
-            state_key)
-    return cached_value
+    return self._state_cache.get(
+        (cache_state_key, cache_token),
+        lambda key: self._partially_cached_iterable(state_key, coder))
 
   def extend(
       self,
@@ -1178,29 +1195,21 @@ class GlobalCachingStateHandler(CachingStateHandler):
     # type: (...) -> _Future
     cache_token = self._get_cache_token(state_key)
     if cache_token:
-      # Update the cache
+      # Update the cache if the value is already present and
+      # can be updated.
       cache_key = self._convert_to_cache_key(state_key)
-      cached_value = self._state_cache.get(cache_key, cache_token)
-      # Keep in mind that the state for this key can be evicted
-      # while executing this function. Either read or write to the cache
-      # but never do both here!
-      if cached_value is None:
-        # We have never cached this key before, first retrieve state
-        cached_value = self.blocking_get(state_key, coder)
-      # Just extend the already cached value
+      cached_value = self._state_cache.peek((cache_key, cache_token))
       if isinstance(cached_value, list):
+        # The state is fully cached and can be extended
+
         # Materialize provided iterable to ensure reproducible iterations,
         # here and when writing to the state handler below.
         elements = list(elements)
-        # The state is fully cached and can be extended
         cached_value.extend(elements)
-      elif isinstance(cached_value, self.ContinuationIterable):
-        # The state is too large to be fully cached (continuation token used),
-        # only the first part is cached, the rest if enumerated via the runner.
-        pass
-      else:
-        # When a corrupt value made it into the cache, we have to fail.
-        raise Exception("Unexpected cached value: %s" % cached_value)
+        # Re-insert into the cache the updated value so the updated size is
+        # reflected.
+        self._state_cache.put((cache_key, cache_token), cached_value)
+
     # Write to state handler
     futures = []
     out = coder_impl.create_OutputStream()
@@ -1223,7 +1232,7 @@ class GlobalCachingStateHandler(CachingStateHandler):
     cache_token = self._get_cache_token(state_key)
     if cache_token:
       cache_key = self._convert_to_cache_key(state_key)
-      self._state_cache.clear(cache_key, cache_token)
+      self._state_cache.put((cache_key, cache_token), [])
     return self._underlying.clear(state_key)
 
   def done(self):
@@ -1290,7 +1299,7 @@ class GlobalCachingStateHandler(CachingStateHandler):
           functools.partial(
               self._lazy_iterator, state_key, coder, continuation_token))
 
-  class ContinuationIterable(Generic[T]):
+  class ContinuationIterable(Generic[T], CacheAware):
     def __init__(self, head, continue_iterator_fn):
       # type: (Iterable[T], Callable[[], Iterable[T]]) -> None
       self.head = head
@@ -1302,6 +1311,13 @@ class GlobalCachingStateHandler(CachingStateHandler):
         yield item
       for item in self.continue_iterator_fn():
         yield item
+
+    def get_referents_for_cache(self):
+      # type: () -> List[Any]
+      # Only capture the size of the elements and not the
+      # continuation iterator since it references objects
+      # we don't want to include in the cache measurement.
+      return [self.head]
 
   @staticmethod
   def _convert_to_cache_key(state_key):

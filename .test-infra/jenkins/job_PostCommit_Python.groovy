@@ -30,7 +30,7 @@ ALL_SUPPORTED_VERSIONS.each { pythonVersion ->
         description('Runs Python postcommit tests using Python ${pythonVersion}.')
 
         // Set common parameters.
-        commonJobProperties.setTopLevelMainJobProperties(delegate, 'master', 180)
+        commonJobProperties.setTopLevelMainJobProperties(delegate, 'master', 360)
 
         publishers {
           archiveJunit('**/pytest*.xml')
@@ -42,6 +42,7 @@ ALL_SUPPORTED_VERSIONS.each { pythonVersion ->
             rootBuildScriptDir(commonJobProperties.checkoutDir)
             tasks(":python${versionSuffix}PostCommit")
             commonJobProperties.setGradleSwitches(delegate)
+            switches("-PuseWheelDistribution")
           }
         }
       }

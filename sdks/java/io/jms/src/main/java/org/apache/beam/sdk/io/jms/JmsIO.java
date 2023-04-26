@@ -17,6 +17,7 @@
  */
 package org.apache.beam.sdk.io.jms;
 
+import static org.apache.beam.sdk.util.Preconditions.checkStateNotNull;
 import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkArgument;
 
 import com.google.auto.value.AutoValue;
@@ -28,10 +29,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import javax.jms.Connection;
 import javax.jms.ConnectionFactory;
 import javax.jms.Destination;
+import javax.jms.JMSException;
 import javax.jms.Message;
 import javax.jms.MessageConsumer;
 import javax.jms.MessageProducer;
@@ -45,6 +49,9 @@ import org.apache.beam.sdk.io.Read.Unbounded;
 import org.apache.beam.sdk.io.UnboundedSource;
 import org.apache.beam.sdk.io.UnboundedSource.CheckpointMark;
 import org.apache.beam.sdk.io.UnboundedSource.UnboundedReader;
+import org.apache.beam.sdk.metrics.Counter;
+import org.apache.beam.sdk.metrics.Metrics;
+import org.apache.beam.sdk.options.ExecutorOptions;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.PTransform;
@@ -52,11 +59,17 @@ import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.SerializableBiFunction;
 import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.display.DisplayData;
+import org.apache.beam.sdk.util.BackOff;
+import org.apache.beam.sdk.util.BackOffUtils;
+import org.apache.beam.sdk.util.FluentBackoff;
+import org.apache.beam.sdk.util.Sleeper;
 import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.MoreObjects;
+import org.checkerframework.checker.initialization.qual.Initialized;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Duration;
 import org.joda.time.Instant;
@@ -123,11 +136,13 @@ import org.slf4j.LoggerFactory;
 public class JmsIO {
 
   private static final Logger LOG = LoggerFactory.getLogger(JmsIO.class);
+  private static final Duration DEFAULT_CLOSE_TIMEOUT = Duration.millis(60000L);
 
   public static Read<JmsRecord> read() {
     return new AutoValue_JmsIO_Read.Builder<JmsRecord>()
         .setMaxNumRecords(Long.MAX_VALUE)
         .setCoder(SerializableCoder.of(JmsRecord.class))
+        .setCloseTimeout(DEFAULT_CLOSE_TIMEOUT)
         .setMessageMapper(
             (MessageMapper<JmsRecord>)
                 new MessageMapper<JmsRecord>() {
@@ -162,7 +177,10 @@ public class JmsIO {
   }
 
   public static <T> Read<T> readMessage() {
-    return new AutoValue_JmsIO_Read.Builder<T>().setMaxNumRecords(Long.MAX_VALUE).build();
+    return new AutoValue_JmsIO_Read.Builder<T>()
+        .setMaxNumRecords(Long.MAX_VALUE)
+        .setCloseTimeout(DEFAULT_CLOSE_TIMEOUT)
+        .build();
   }
 
   public static <EventT> Write<EventT> write() {
@@ -206,6 +224,8 @@ public class JmsIO {
 
     abstract @Nullable AutoScaler getAutoScaler();
 
+    abstract Duration getCloseTimeout();
+
     abstract Builder<T> builder();
 
     @AutoValue.Builder
@@ -229,6 +249,8 @@ public class JmsIO {
       abstract Builder<T> setCoder(Coder<T> coder);
 
       abstract Builder<T> setAutoScaler(AutoScaler autoScaler);
+
+      abstract Builder<T> setCloseTimeout(Duration closeTimeout);
 
       abstract Read<T> build();
     }
@@ -364,6 +386,18 @@ public class JmsIO {
       return builder().setAutoScaler(autoScaler).build();
     }
 
+    /**
+     * Sets the amount of time to wait for callbacks from the runner stating that the output has
+     * been durably persisted before closing the connection to the JMS broker. Any callbacks that do
+     * not occur will cause unacknowledged messages to be returned to the JMS broker and redelivered
+     * to other clients.
+     */
+    public Read<T> withCloseTimeout(Duration closeTimeout) {
+      checkArgument(closeTimeout != null, "closeTimeout can not be null");
+      checkArgument(closeTimeout.getMillis() >= 0, "Close timeout must be non-negative.");
+      return builder().setCloseTimeout(closeTimeout).build();
+    }
+
     @Override
     public PCollection<T> expand(PBegin input) {
       checkArgument(getConnectionFactory() != null, "withConnectionFactory() is required");
@@ -446,7 +480,7 @@ public class JmsIO {
     @Override
     public UnboundedJmsReader<T> createReader(
         PipelineOptions options, JmsCheckpointMark checkpointMark) {
-      return new UnboundedJmsReader<T>(this, checkpointMark);
+      return new UnboundedJmsReader<T>(this, options);
     }
 
     @Override
@@ -471,15 +505,13 @@ public class JmsIO {
 
     private T currentMessage;
     private Instant currentTimestamp;
+    private PipelineOptions options;
 
-    public UnboundedJmsReader(UnboundedJmsSource<T> source, JmsCheckpointMark checkpointMark) {
+    public UnboundedJmsReader(UnboundedJmsSource<T> source, PipelineOptions options) {
       this.source = source;
-      if (checkpointMark != null) {
-        this.checkpointMark = checkpointMark;
-      } else {
-        this.checkpointMark = new JmsCheckpointMark();
-      }
+      this.checkpointMark = new JmsCheckpointMark();
       this.currentMessage = null;
+      this.options = options;
     }
 
     @Override
@@ -582,28 +614,83 @@ public class JmsIO {
     }
 
     @Override
-    public void close() throws IOException {
+    public void close() {
+      doClose();
+    }
+
+    @SuppressWarnings("FutureReturnValueIgnored")
+    private void doClose() {
+
       try {
-        if (consumer != null) {
-          consumer.close();
-          consumer = null;
-        }
-        if (session != null) {
-          session.close();
-          session = null;
-        }
+        closeAutoscaler();
+        closeConsumer();
+        ScheduledExecutorService executorService =
+            options.as(ExecutorOptions.class).getScheduledExecutorService();
+        executorService.schedule(
+            () -> {
+              LOG.debug(
+                  "Closing session and connection after delay {}", source.spec.getCloseTimeout());
+              // Discard the checkpoints and set the reader as inactive
+              checkpointMark.discard();
+              closeSession();
+              closeConnection();
+            },
+            source.spec.getCloseTimeout().getMillis(),
+            TimeUnit.MILLISECONDS);
+
+      } catch (Exception e) {
+        LOG.error("Error closing reader", e);
+      }
+    }
+
+    private void closeConnection() {
+      try {
         if (connection != null) {
           connection.stop();
           connection.close();
           connection = null;
         }
+      } catch (Exception e) {
+        LOG.error("Error closing connection", e);
+      }
+    }
+
+    private void closeSession() {
+      try {
+        if (session != null) {
+          session.close();
+          session = null;
+        }
+      } catch (Exception e) {
+        LOG.error("Error closing session" + e.getMessage(), e);
+      }
+    }
+
+    private void closeConsumer() {
+      try {
+        if (consumer != null) {
+          consumer.close();
+          consumer = null;
+        }
+      } catch (Exception e) {
+        LOG.error("Error closing consumer", e);
+      }
+    }
+
+    private void closeAutoscaler() {
+      try {
         if (autoScaler != null) {
           autoScaler.stop();
           autoScaler = null;
         }
       } catch (Exception e) {
-        throw new IOException(e);
+        LOG.error("Error closing autoscaler", e);
       }
+    }
+
+    @Override
+    protected void finalize() {
+      doClose();
     }
   }
 
@@ -629,6 +716,8 @@ public class JmsIO {
 
     abstract @Nullable SerializableFunction<EventT, String> getTopicNameMapper();
 
+    abstract @Nullable RetryConfiguration getRetryConfiguration();
+
     abstract Builder<EventT> builder();
 
     @AutoValue.Builder
@@ -648,6 +737,8 @@ public class JmsIO {
 
       abstract Builder<EventT> setTopicNameMapper(
           SerializableFunction<EventT, String> topicNameMapper);
+
+      abstract Builder<EventT> setRetryConfiguration(RetryConfiguration retryConfiguration);
 
       abstract Write<EventT> build();
     }
@@ -789,6 +880,48 @@ public class JmsIO {
       return builder().setValueMapper(valueMapper).build();
     }
 
+    /**
+     * Specify the JMS retry configuration. The {@link JmsIO.Write} acts as a publisher on the
+     * topic.
+     *
+     * <p>Allows a retry for failed published messages, the user should specify the maximum number
+     * of retries, a duration for retrying and a maximum cumulative retries. By default, the
+     * duration for retrying used is 15s and the maximum cumulative is 1000 days {@link
+     * RetryConfiguration}
+     *
+     * <p>For example:
+     *
+     * <pre>{@code
+     * RetryConfiguration retryConfiguration = RetryConfiguration.create(5);
+     * }</pre>
+     *
+     * or
+     *
+     * <pre>{@code
+     * RetryConfiguration retryConfiguration =
+     *   RetryConfiguration.create(5, Duration.standardSeconds(30), null);
+     * }</pre>
+     *
+     * or
+     *
+     * <pre>{@code
+     * RetryConfiguration retryConfiguration =
+     *   RetryConfiguration.create(5, Duration.standardSeconds(30), Duration.standardDays(15));
+     * }</pre>
+     *
+     * <pre>{@code
+     * .apply(JmsIO.write().withPublicationRetryPolicy(publicationRetryPolicy)
+     * }</pre>
+     *
+     * @param retryConfiguration The retry configuration that should be used in case of failed
+     *     publications.
+     * @return The corresponding {@link JmsIO.Write}.
+     */
+    public Write<EventT> withRetryConfiguration(RetryConfiguration retryConfiguration) {
+      checkArgument(retryConfiguration != null, "retryConfiguration can not be null");
+      return builder().setRetryConfiguration(retryConfiguration).build();
+    }
+
     @Override
     public WriteJmsResult<EventT> expand(PCollection<EventT> input) {
       checkArgument(getConnectionFactory() != null, "withConnectionFactory() is required");
@@ -801,15 +934,7 @@ public class JmsIO {
           "Only one of withQueue(queue), withTopic(topic), or withTopicNameMapper(function) must be set.");
       checkArgument(getValueMapper() != null, "withValueMapper() is required");
 
-      final TupleTag<EventT> failedMessagesTag = new TupleTag<>();
-      final TupleTag<EventT> messagesTag = new TupleTag<>();
-      PCollectionTuple res =
-          input.apply(
-              ParDo.of(new WriterFn<>(this, failedMessagesTag))
-                  .withOutputTags(messagesTag, TupleTagList.of(failedMessagesTag)));
-      PCollection<EventT> failedMessages = res.get(failedMessagesTag).setCoder(input.getCoder());
-      res.get(messagesTag).setCoder(input.getCoder());
-      return WriteJmsResult.in(input.getPipeline(), failedMessagesTag, failedMessages);
+      return input.apply(new Writer<>(this));
     }
 
     private boolean isExclusiveTopicQueue() {
@@ -820,32 +945,71 @@ public class JmsIO {
               == 1;
       return exclusiveTopicQueue;
     }
+  }
 
-    private static class WriterFn<EventT> extends DoFn<EventT, EventT> {
+  static class Writer<T> extends PTransform<PCollection<T>, WriteJmsResult<T>> {
 
-      private Write<EventT> spec;
+    public static final String CONNECTION_ERRORS_METRIC_NAME = "connectionErrors";
+    public static final String PUBLICATION_RETRIES_METRIC_NAME = "publicationRetries";
+    public static final String JMS_IO_PRODUCER_METRIC_NAME = Writer.class.getCanonicalName();
 
-      private Connection connection;
-      private Session session;
-      private MessageProducer producer;
-      private Destination destination;
-      private final TupleTag<EventT> failedMessageTag;
+    private static final Logger LOG = LoggerFactory.getLogger(Writer.class);
+    private static final String PUBLISH_TO_JMS_STEP_NAME = "Publish to JMS";
 
-      public WriterFn(Write<EventT> spec, TupleTag<EventT> failedMessageTag) {
+    private final JmsIO.Write<T> spec;
+    private final TupleTag<T> messagesTag;
+    private final TupleTag<T> failedMessagesTag;
+
+    Writer(JmsIO.Write<T> spec) {
+      this.spec = spec;
+      this.messagesTag = new TupleTag<>();
+      this.failedMessagesTag = new TupleTag<>();
+    }
+
+    @Override
+    public WriteJmsResult<T> expand(PCollection<T> input) {
+      PCollectionTuple failedPublishedMessagesTuple =
+          input.apply(
+              PUBLISH_TO_JMS_STEP_NAME,
+              ParDo.of(new JmsIOProducerFn<>(spec, failedMessagesTag))
+                  .withOutputTags(messagesTag, TupleTagList.of(failedMessagesTag)));
+      PCollection<T> failedPublishedMessages =
+          failedPublishedMessagesTuple.get(failedMessagesTag).setCoder(input.getCoder());
+      failedPublishedMessagesTuple.get(messagesTag).setCoder(input.getCoder());
+
+      return WriteJmsResult.in(input.getPipeline(), failedMessagesTag, failedPublishedMessages);
+    }
+
+    private static class JmsConnection<T> implements Serializable {
+
+      private static final long serialVersionUID = 1L;
+
+      private transient @Initialized Session session;
+      private transient @Initialized Connection connection;
+      private transient @Initialized Destination destination;
+      private transient @Initialized MessageProducer producer;
+
+      private final JmsIO.Write<T> spec;
+      private final Counter connectionErrors =
+          Metrics.counter(JMS_IO_PRODUCER_METRIC_NAME, CONNECTION_ERRORS_METRIC_NAME);
+
+      JmsConnection(Write<T> spec) {
         this.spec = spec;
-        this.failedMessageTag = failedMessageTag;
       }
 
-      @Setup
-      public void setup() throws Exception {
-        if (producer == null) {
+      void connect() throws JMSException {
+        if (this.producer == null) {
+          ConnectionFactory connectionFactory = spec.getConnectionFactory();
           if (spec.getUsername() != null) {
             this.connection =
-                spec.getConnectionFactory()
-                    .createConnection(spec.getUsername(), spec.getPassword());
+                connectionFactory.createConnection(spec.getUsername(), spec.getPassword());
           } else {
-            this.connection = spec.getConnectionFactory().createConnection();
+            this.connection = connectionFactory.createConnection();
           }
+          this.connection.setExceptionListener(
+              exception -> {
+                this.connectionErrors.inc();
+              });
           this.connection.start();
           // false means we don't use JMS transaction.
           this.session = this.connection.createSession(false, Session.AUTO_ACKNOWLEDGE);
@@ -855,36 +1019,129 @@ public class JmsIO {
           } else if (spec.getTopic() != null) {
             this.destination = session.createTopic(spec.getTopic());
           }
-
-          this.producer = this.session.createProducer(null);
+          // Create producer with null destination. Destination will be set with producer.send().
+          startProducer();
         }
+      }
+
+      void publishMessage(T input) throws JMSException, JmsIOException {
+        Destination destinationToSendTo = destination;
+        try {
+          Message message = spec.getValueMapper().apply(input, session);
+          if (spec.getTopicNameMapper() != null) {
+            destinationToSendTo = session.createTopic(spec.getTopicNameMapper().apply(input));
+          }
+          producer.send(destinationToSendTo, message);
+        } catch (JMSException | JmsIOException | NullPointerException exception) {
+          // Handle NPE in case of getValueMapper or getTopicNameMapper returns NPE
+          if (exception instanceof NullPointerException) {
+            throw new JmsIOException("An error occurred", exception);
+          }
+          throw exception;
+        }
+      }
+
+      void startProducer() throws JMSException {
+        this.producer = this.session.createProducer(null);
+      }
+
+      void closeProducer() throws JMSException {
+        if (producer != null) {
+          producer.close();
+          producer = null;
+        }
+      }
+
+      void close() {
+        try {
+          closeProducer();
+          if (session != null) {
+            session.close();
+          }
+          if (connection != null) {
+            connection.close();
+          }
+        } catch (JMSException exception) {
+          LOG.warn("The connection couldn't be closed", exception);
+        } finally {
+          session = null;
+          connection = null;
+        }
+      }
+    }
+
+    static class JmsIOProducerFn<T> extends DoFn<T, T> {
+
+      private transient @Initialized FluentBackoff retryBackOff;
+
+      private final JmsIO.Write<T> spec;
+      private final TupleTag<T> failedMessagesTags;
+      private final @Initialized JmsConnection<T> jmsConnection;
+      private final Counter publicationRetries =
+          Metrics.counter(JMS_IO_PRODUCER_METRIC_NAME, PUBLICATION_RETRIES_METRIC_NAME);
+
+      JmsIOProducerFn(JmsIO.Write<T> spec, TupleTag<T> failedMessagesTags) {
+        this.spec = spec;
+        this.failedMessagesTags = failedMessagesTags;
+        this.jmsConnection = new JmsConnection<>(spec);
+      }
+
+      @Setup
+      public void setup() throws JMSException {
+        this.jmsConnection.connect();
+        RetryConfiguration retryConfiguration =
+            MoreObjects.firstNonNull(spec.getRetryConfiguration(), RetryConfiguration.create());
+        retryBackOff =
+            FluentBackoff.DEFAULT
+                .withInitialBackoff(checkStateNotNull(retryConfiguration.getInitialDuration()))
+                .withMaxCumulativeBackoff(checkStateNotNull(retryConfiguration.getMaxDuration()))
+                .withMaxRetries(retryConfiguration.getMaxAttempts());
+      }
+
+      @StartBundle
+      public void startBundle() throws JMSException {
+        this.jmsConnection.startProducer();
       }
 
       @ProcessElement
-      public void processElement(ProcessContext ctx) {
-        Destination destinationToSendTo = destination;
+      public void processElement(@Element T input, ProcessContext context) {
         try {
-          Message message = spec.getValueMapper().apply(ctx.element(), session);
-          if (spec.getTopicNameMapper() != null) {
-            destinationToSendTo =
-                session.createTopic(spec.getTopicNameMapper().apply(ctx.element()));
+          publishMessage(input);
+        } catch (JMSException | JmsIOException | IOException | InterruptedException exception) {
+          LOG.error("Error while publishing the message", exception);
+          context.output(this.failedMessagesTags, input);
+          if (exception instanceof InterruptedException) {
+            Thread.currentThread().interrupt();
           }
-          producer.send(destinationToSendTo, message);
-        } catch (Exception ex) {
-          LOG.error("Error sending message on topic {}", destinationToSendTo);
-          ctx.output(failedMessageTag, ctx.element());
         }
       }
 
+      private void publishMessage(T input)
+          throws JMSException, JmsIOException, IOException, InterruptedException {
+        Sleeper sleeper = Sleeper.DEFAULT;
+        BackOff backoff = checkStateNotNull(retryBackOff).backoff();
+        while (true) {
+          try {
+            this.jmsConnection.publishMessage(input);
+            break;
+          } catch (JMSException | JmsIOException exception) {
+            if (!BackOffUtils.next(sleeper, backoff)) {
+              throw exception;
+            } else {
+              publicationRetries.inc();
+            }
+          }
+        }
+      }
+
+      @FinishBundle
+      public void finishBundle() throws JMSException {
+        this.jmsConnection.closeProducer();
+      }
+
       @Teardown
-      public void teardown() throws Exception {
-        producer.close();
-        producer = null;
-        session.close();
-        session = null;
-        connection.stop();
-        connection.close();
-        connection = null;
+      public void tearDown() {
+        this.jmsConnection.close();
       }
     }
   }

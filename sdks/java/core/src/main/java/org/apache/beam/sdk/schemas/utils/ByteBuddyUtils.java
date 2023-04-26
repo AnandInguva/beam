@@ -283,6 +283,11 @@ public class ByteBuddyUtils {
       }
     }
 
+    protected StackManipulation shortCircuitReturnNull(
+        StackManipulation readValue, StackManipulation onNotNull) {
+      return new ShortCircuitReturnNull(readValue, onNotNull);
+    }
+
     protected abstract T convertArray(TypeDescriptor<?> type);
 
     protected abstract T convertIterable(TypeDescriptor<?> type);
@@ -1440,7 +1445,11 @@ public class ByteBuddyUtils {
         }
         if (index == null) {
           throw new RuntimeException(
-              "Creator parameter " + paramName + " Doesn't correspond to a schema field");
+              "Creator parameter "
+                  + paramName
+                  + " Doesn't correspond to a schema field."
+                  + " Make sure that you are compiling with -parameters parameter to include"
+                  + " constructor parameter information in class files.");
         }
         fieldMapping.put(i, index);
       }

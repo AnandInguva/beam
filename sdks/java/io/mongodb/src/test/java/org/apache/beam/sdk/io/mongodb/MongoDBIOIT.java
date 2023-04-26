@@ -19,6 +19,7 @@ package org.apache.beam.sdk.io.mongodb;
 
 import static org.apache.beam.sdk.io.common.IOITHelper.executeWithRetry;
 import static org.apache.beam.sdk.io.common.IOITHelper.getHashForRecordCount;
+import static org.junit.Assert.assertNotEquals;
 
 import com.google.cloud.Timestamp;
 import com.mongodb.client.MongoClient;
@@ -29,6 +30,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
+import org.apache.beam.repackaged.core.org.apache.commons.lang3.StringUtils;
 import org.apache.beam.sdk.PipelineResult;
 import org.apache.beam.sdk.io.GenerateSequence;
 import org.apache.beam.sdk.io.common.HashingFn;
@@ -107,6 +109,20 @@ public class MongoDBIOIT {
     String getMongoDBDatabaseName();
 
     void setMongoDBDatabaseName(String name);
+
+    @Description("Username for mongodb server")
+    @Default.String("")
+    String getMongoDBUsername();
+
+    void setMongoDBUsername(String name);
+
+    // Note that passwords are not as secure an authentication as other methods, and used here for
+    // a test environment only.
+    @Description("Password for mongodb server")
+    @Default.String("")
+    String getMongoDBPassword();
+
+    void setMongoDBPassword(String value);
   }
 
   private static final Map<Integer, String> EXPECTED_HASHES =
@@ -126,8 +142,23 @@ public class MongoDBIOIT {
     PipelineOptionsFactory.register(MongoDBPipelineOptions.class);
     options = TestPipeline.testingPipelineOptions().as(MongoDBPipelineOptions.class);
     collection = String.format("test_%s", new Date().getTime());
-    mongoUrl =
-        String.format("mongodb://%s:%s", options.getMongoDBHostName(), options.getMongoDBPort());
+    if (StringUtils.isEmpty(options.getMongoDBUsername())) {
+      mongoUrl =
+          String.format("mongodb://%s:%s", options.getMongoDBHostName(), options.getMongoDBPort());
+    } else if (StringUtils.isEmpty(options.getMongoDBPassword())) {
+      mongoUrl =
+          String.format(
+              "mongodb://%s@%s:%s",
+              options.getMongoDBUsername(), options.getMongoDBHostName(), options.getMongoDBPort());
+    } else {
+      mongoUrl =
+          String.format(
+              "mongodb://%s:%s@%s:%s",
+              options.getMongoDBUsername(),
+              options.getMongoDBPassword(),
+              options.getMongoDBHostName(),
+              options.getMongoDBPort());
+    }
     mongoClient = MongoClients.create(mongoUrl);
     settings =
         InfluxDBSettings.builder()
@@ -167,7 +198,7 @@ public class MongoDBIOIT {
                 .withDatabase(options.getMongoDBDatabaseName())
                 .withCollection(collection));
     PipelineResult writeResult = writePipeline.run();
-    writeResult.waitUntilFinish();
+    PipelineResult.State writeState = writeResult.waitUntilFinish();
 
     finalCollectionSize = getCollectionSizeInBytes(collection);
 
@@ -187,8 +218,12 @@ public class MongoDBIOIT {
     PAssert.thatSingleton(consolidatedHashcode).isEqualTo(expectedHash);
 
     PipelineResult readResult = readPipeline.run();
-    readResult.waitUntilFinish();
+    PipelineResult.State readState = readResult.waitUntilFinish();
     collectAndPublishMetrics(writeResult, readResult);
+
+    // Fail the test if pipeline failed.
+    assertNotEquals(writeState, PipelineResult.State.FAILED);
+    assertNotEquals(readState, PipelineResult.State.FAILED);
   }
 
   private double getCollectionSizeInBytes(final String collectionName) {

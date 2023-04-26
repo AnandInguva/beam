@@ -26,7 +26,7 @@ import {
   extractName,
   withName,
 } from "./transforms/transform";
-import { parDo, DoFn } from "./transforms/pardo";
+import { parDo, DoFn, extractContext } from "./transforms/pardo";
 import * as runnerApi from "./proto/beam_runner_api";
 
 /**
@@ -34,8 +34,10 @@ import * as runnerApi from "./proto/beam_runner_api";
  * Generally followed by a source-like transform such as a read or impulse.
  */
 export class Root {
+  /** @internal */
   pipeline: Pipeline;
 
+  /** @internal */
   constructor(pipeline: Pipeline) {
     this.pipeline = pipeline;
   }
@@ -59,13 +61,15 @@ export class Root {
 
 /**
  * A deferred, possibly distributed collection of elements.
+ * See https://beam.apache.org/documentation/programming-guide/#pcollections
  */
 export class PCollection<T> {
-  type: string = "pcollection";
+  /** @internal */
   pipeline: Pipeline;
   private id: string;
   private computeId: () => string;
 
+  /** @internal */
   constructor(pipeline: Pipeline, id: string | (() => string)) {
     this.pipeline = pipeline;
     if (typeof id === "string") {
@@ -75,6 +79,7 @@ export class PCollection<T> {
     }
   }
 
+  /** @internal */
   getId(): string {
     if (this.id === null || this.id === undefined) {
       this.id = this.computeId();
@@ -106,6 +111,9 @@ export class PCollection<T> {
       | ((element: T, context: ContextT) => OutputT),
     context: ContextT = undefined!
   ): PCollection<OutputT> {
+    if (extractContext(fn)) {
+      context = { ...extractContext(fn), ...context };
+    }
     return this.apply(
       withName(
         "map(" + extractName(fn) + ")",
@@ -131,6 +139,9 @@ export class PCollection<T> {
       | ((element: T, context: ContextT) => Iterable<OutputT>),
     context: ContextT = undefined!
   ): PCollection<OutputT> {
+    if (extractContext(fn)) {
+      context = { ...extractContext(fn), ...context };
+    }
     return this.apply(
       withName(
         "flatMap(" + extractName(fn) + ")",
@@ -156,7 +167,7 @@ export class PCollection<T> {
 }
 
 /**
- * The type of object that may be consumed or produced by a PTransformClass.
+ * The type of object that may be consumed or produced by a PTransform.
  */
 export type PValue<T> =
   | void

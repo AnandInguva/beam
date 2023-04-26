@@ -204,6 +204,9 @@ public class EnvironmentsTest implements Serializable {
     assertThat(
         Environments.getJavaCapabilities(),
         hasItem(BeamUrns.getUrn(RunnerApi.StandardProtocols.Enum.STATE_CACHING)));
+    assertThat(
+        Environments.getJavaCapabilities(),
+        hasItem(BeamUrns.getUrn(RunnerApi.StandardProtocols.Enum.DATA_SAMPLING)));
     // Check that SDF truncation is supported
     assertThat(
         Environments.getJavaCapabilities(),
@@ -275,7 +278,7 @@ public class EnvironmentsTest implements Serializable {
   }
 
   @Test
-  public void testJavaVersion() {
+  public void testLtsJavaVersion() {
     assertEquals(JavaVersion.java8, JavaVersion.forSpecification("1.8"));
     assertEquals("java", JavaVersion.java8.legacyName());
     assertEquals(JavaVersion.java11, JavaVersion.forSpecification("11"));
@@ -284,8 +287,21 @@ public class EnvironmentsTest implements Serializable {
     assertEquals("java17", JavaVersion.java17.legacyName());
   }
 
+  @Test
+  public void testNonLtsJavaVersion() {
+    assertEquals(JavaVersion.java8, JavaVersion.forSpecification("9"));
+    assertEquals(JavaVersion.java11, JavaVersion.forSpecification("10"));
+    assertEquals(JavaVersion.java11, JavaVersion.forSpecification("12"));
+    assertEquals(JavaVersion.java11, JavaVersion.forSpecification("13"));
+    assertEquals(JavaVersion.java17, JavaVersion.forSpecification("14"));
+    assertEquals(JavaVersion.java17, JavaVersion.forSpecification("15"));
+    assertEquals(JavaVersion.java17, JavaVersion.forSpecification("16"));
+    assertEquals(JavaVersion.java17, JavaVersion.forSpecification("18"));
+    assertEquals(JavaVersion.java17, JavaVersion.forSpecification("19"));
+  }
+
   @Test(expected = UnsupportedOperationException.class)
-  public void testJavaVersionInvalid() {
-    assertEquals(JavaVersion.java8, JavaVersion.forSpecification("invalid"));
+  public void testJavaVersionStrictInvalid() {
+    assertEquals(JavaVersion.java8, JavaVersion.forSpecificationStrict("invalid"));
   }
 }

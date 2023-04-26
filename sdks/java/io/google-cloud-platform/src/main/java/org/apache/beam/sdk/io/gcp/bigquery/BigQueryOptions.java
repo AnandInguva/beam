@@ -17,6 +17,8 @@
  */
 package org.apache.beam.sdk.io.gcp.bigquery;
 
+import org.apache.beam.sdk.annotations.Experimental;
+import org.apache.beam.sdk.annotations.Experimental.Kind;
 import org.apache.beam.sdk.extensions.gcp.options.GcpOptions;
 import org.apache.beam.sdk.options.ApplicationNameOptions;
 import org.apache.beam.sdk.options.Default;
@@ -109,6 +111,24 @@ public interface BigQueryOptions
 
   void setNumStorageWriteApiStreamAppendClients(Integer value);
 
+  @Description("The max number of messages inflight that we expect each connection will retain.")
+  @Default.Long(1000)
+  Long getStorageWriteMaxInflightRequests();
+
+  void setStorageWriteMaxInflightRequests(Long value);
+
+  @Description(
+      "The max size in bytes for inflight messages that we expect each connection will retain.")
+  @Default.Long(104857600)
+  Long getStorageWriteMaxInflightBytes();
+
+  void setStorageWriteMaxInflightBytes(Long value);
+
+  @Default.Boolean(false)
+  Boolean getUseStorageApiConnectionPool();
+
+  void setUseStorageApiConnectionPool(Boolean value);
+
   @Description(
       "If set, then BigQueryIO.Write will default to triggering the Storage Write API writes this often.")
   Integer getStorageWriteApiTriggeringFrequencySec();
@@ -128,12 +148,6 @@ public interface BigQueryOptions
 
   void setBigQueryProject(String value);
 
-  @Description("Specify the number of schema update retries. For internal testing only.")
-  @Default.Integer(2)
-  Integer getSchemaUpdateRetries();
-
-  void setSchemaUpdateRetries(Integer value);
-
   @Description("Maximum (best effort) size of a single append to the storage API.")
   @Default.Integer(2 * 1024 * 1024)
   Integer getStorageApiAppendThresholdBytes();
@@ -145,4 +159,19 @@ public interface BigQueryOptions
   Integer getStorageApiAppendThresholdRecordCount();
 
   void setStorageApiAppendThresholdRecordCount(Integer value);
+
+  @Description("Maximum request size allowed by the storage write API. ")
+  @Default.Long(10 * 1000 * 1000)
+  Long getStorageWriteApiMaxRequestSize();
+
+  void setStorageWriteApiMaxRequestSize(Long value);
+
+  @Experimental(Kind.UNSPECIFIED)
+  @Description(
+      "If set, BigQueryIO.Read will use the StreamBundle based"
+          + "implementation of the Read API Source")
+  @Default.Boolean(false)
+  Boolean getEnableBundling();
+
+  void setEnableBundling(Boolean value);
 }

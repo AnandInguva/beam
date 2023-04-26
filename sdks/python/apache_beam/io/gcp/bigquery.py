@@ -302,6 +302,18 @@ result.destination_file_pairs       <--> result['destination_file_pairs']
 result.destination_copy_jobid_pairs <--> result['destination_copy_jobid_pairs']
 ```
 
+Writing with Storage Write API using Cross Language
+---------------------------------------------------
+This sink is able to write with BigQuery's Storage Write API. To do so, specify
+the method `WriteToBigQuery.Method.STORAGE_WRITE_API`. This will use the
+StorageWriteToBigQuery() transform to discover and use the Java implementation.
+Using this transform directly will require the use of beam.Row() elements.
+
+Similar to streaming inserts, it returns two dead-letter queue PCollections:
+one containing just the failed rows and the other containing failed rows and
+errors. They can be accessed with `failed_rows` and `failed_rows_with_errors`,
+respectively. See the examples above for how to do this.
+
 
 *** Short introduction to BigQuery concepts ***
 Tables have rows (TableRow) and each row has cells (TableCell).
@@ -350,6 +362,7 @@ import logging
 import random
 import time
 import uuid
+import warnings
 from dataclasses import dataclass
 from typing import Dict
 from typing import List
@@ -368,6 +381,7 @@ from apache_beam.io import range_trackers
 from apache_beam.io.avroio import _create_avro_source as create_avro_source
 from apache_beam.io.filesystems import CompressionTypes
 from apache_beam.io.filesystems import FileSystems
+from apache_beam.io.gcp import bigquery_schema_tools
 from apache_beam.io.gcp import bigquery_tools
 from apache_beam.io.gcp.bigquery_io_metadata import create_bigquery_io_metadata
 from apache_beam.io.gcp.bigquery_read_internal import _BigQueryReadSplit
@@ -391,15 +405,17 @@ from apache_beam.options.value_provider import StaticValueProvider
 from apache_beam.options.value_provider import ValueProvider
 from apache_beam.options.value_provider import check_accessible
 from apache_beam.pvalue import PCollection
-from apache_beam.runners.dataflow.native_io import iobase as dataflow_io
 from apache_beam.transforms import DoFn
 from apache_beam.transforms import ParDo
 from apache_beam.transforms import PTransform
 from apache_beam.transforms.display import DisplayDataItem
+from apache_beam.transforms.external import BeamJarExpansionService
+from apache_beam.transforms.external import SchemaAwareExternalTransform
 from apache_beam.transforms.sideinputs import SIDE_INPUT_PREFIX
 from apache_beam.transforms.sideinputs import get_sideinput_index
 from apache_beam.transforms.util import ReshufflePerKey
 from apache_beam.transforms.window import GlobalWindows
+from apache_beam.typehints.row_type import RowTypeConstraint
 from apache_beam.utils import retry
 from apache_beam.utils.annotations import deprecated
 from apache_beam.utils.annotations import experimental
@@ -480,16 +496,6 @@ def default_encoder(obj):
 @deprecated(since='2.11.0', current="bigquery_tools.RowAsDictJsonCoder")
 def RowAsDictJsonCoder(*args, **kwargs):
   return bigquery_tools.RowAsDictJsonCoder(*args, **kwargs)
-
-
-@deprecated(since='2.11.0', current="bigquery_tools.BigQueryReader")
-def BigQueryReader(*args, **kwargs):
-  return bigquery_tools.BigQueryReader(*args, **kwargs)
-
-
-@deprecated(since='2.11.0', current="bigquery_tools.BigQueryWriter")
-def BigQueryWriter(*args, **kwargs):
-  return bigquery_tools.BigQueryWriter(*args, **kwargs)
 
 
 @deprecated(since='2.11.0', current="bigquery_tools.BigQueryWrapper")
@@ -591,158 +597,29 @@ def BigQuerySource(
     kms_key=None,
     use_dataflow_native_source=False):
   if use_dataflow_native_source:
-    return _BigQuerySource(
-        table,
-        dataset,
-        project,
-        query,
-        validate,
-        coder,
-        use_standard_sql,
-        flatten_results,
-        kms_key)
-  else:
-    return ReadFromBigQuery(
-        table=table,
-        dataset=dataset,
-        project=project,
-        query=query,
-        validate=validate,
-        coder=coder,
-        use_standard_sql=use_standard_sql,
-        flatten_results=flatten_results,
-        use_json_exports=True,
-        kms_key=kms_key)
+    warnings.warn(
+        "Native sources no longer implemented; "
+        "falling back to standard Beam source.")
+  return ReadFromBigQuery(
+      table=table,
+      dataset=dataset,
+      project=project,
+      query=query,
+      validate=validate,
+      coder=coder,
+      use_standard_sql=use_standard_sql,
+      flatten_results=flatten_results,
+      use_json_exports=True,
+      kms_key=kms_key)
 
 
 @deprecated(since='2.25.0', current="ReadFromBigQuery")
-class _BigQuerySource(dataflow_io.NativeSource):
+def _BigQuerySource(*args, **kwargs):
   """A source based on a BigQuery table."""
-  def __init__(
-      self,
-      table=None,
-      dataset=None,
-      project=None,
-      query=None,
-      validate=False,
-      coder=None,
-      use_standard_sql=False,
-      flatten_results=True,
-      kms_key=None,
-      temp_dataset=None):
-    """Initialize a :class:`BigQuerySource`.
-
-    Args:
-      table (str): The ID of a BigQuery table. If specified all data of the
-        table will be used as input of the current source. The ID must contain
-        only letters ``a-z``, ``A-Z``, numbers ``0-9``, or underscores
-        ``_``. If dataset and query arguments are :data:`None` then the table
-        argument must contain the entire table reference specified as:
-        ``'DATASET.TABLE'`` or ``'PROJECT:DATASET.TABLE'``.
-      dataset (str): The ID of the dataset containing this table or
-        :data:`None` if the table reference is specified entirely by the table
-        argument or a query is specified.
-      project (str): The ID of the project containing this table or
-        :data:`None` if the table reference is specified entirely by the table
-        argument or a query is specified.
-      query (str): A query to be used instead of arguments table, dataset, and
-        project.
-      validate (bool): If :data:`True`, various checks will be done when source
-        gets initialized (e.g., is table present?). This should be
-        :data:`True` for most scenarios in order to catch errors as early as
-        possible (pipeline construction instead of pipeline execution). It
-        should be :data:`False` if the table is created during pipeline
-        execution by a previous step.
-      coder (~apache_beam.coders.coders.Coder): The coder for the table
-        rows if serialized to disk. If :data:`None`, then the default coder is
-        :class:`~apache_beam.io.gcp.bigquery_tools.RowAsDictJsonCoder`,
-        which will interpret every line in a file as a JSON serialized
-        dictionary. This argument needs a value only in special cases when
-        returning table rows as dictionaries is not desirable.
-      use_standard_sql (bool): Specifies whether to use BigQuery's standard SQL
-        dialect for this query. The default value is :data:`False`.
-        If set to :data:`True`, the query will use BigQuery's updated SQL
-        dialect with improved standards compliance.
-        This parameter is ignored for table inputs.
-      flatten_results (bool): Flattens all nested and repeated fields in the
-        query results. The default value is :data:`True`.
-      kms_key (str): Optional Cloud KMS key name for use when creating new
-        tables.
-      temp_dataset (``google.cloud.bigquery.dataset.DatasetReference``):
-        The dataset in which to create temporary tables when performing file
-        loads. By default, a new dataset is created in the execution project for
-        temporary tables.
-
-    Raises:
-      ValueError: if any of the following is true:
-
-        1) the table reference as a string does not match the expected format
-        2) neither a table nor a query is specified
-        3) both a table and a query is specified.
-    """
-
-    # Import here to avoid adding the dependency for local running scenarios.
-    try:
-      # pylint: disable=wrong-import-order, wrong-import-position
-      from apitools.base import py  # pylint: disable=unused-import
-    except ImportError:
-      raise ImportError(
-          'Google Cloud IO not available, '
-          'please install apache_beam[gcp]')
-
-    if table is not None and query is not None:
-      raise ValueError(
-          'Both a BigQuery table and a query were specified.'
-          ' Please specify only one of these.')
-    elif table is None and query is None:
-      raise ValueError('A BigQuery table or a query must be specified')
-    elif table is not None:
-      self.table_reference = bigquery_tools.parse_table_reference(
-          table, dataset, project)
-      self.query = None
-      self.use_legacy_sql = True
-    else:
-      self.query = query
-      # TODO(BEAM-1082): Change the internal flag to be standard_sql
-      self.use_legacy_sql = not use_standard_sql
-      self.table_reference = None
-
-    self.validate = validate
-    self.flatten_results = flatten_results
-    self.coder = coder or bigquery_tools.RowAsDictJsonCoder()
-    self.kms_key = kms_key
-    self.temp_dataset = temp_dataset
-
-  def display_data(self):
-    if self.query is not None:
-      res = {'query': DisplayDataItem(self.query, label='Query')}
-    else:
-      if self.table_reference.projectId is not None:
-        tableSpec = '{}:{}.{}'.format(
-            self.table_reference.projectId,
-            self.table_reference.datasetId,
-            self.table_reference.tableId)
-      else:
-        tableSpec = '{}.{}'.format(
-            self.table_reference.datasetId, self.table_reference.tableId)
-      res = {'table': DisplayDataItem(tableSpec, label='Table')}
-
-    res['validation'] = DisplayDataItem(
-        self.validate, label='Validation Enabled')
-    return res
-
-  @property
-  def format(self):
-    """Source format name required for remote execution."""
-    return 'bigquery'
-
-  def reader(self, test_bigquery_client=None):
-    return bigquery_tools.BigQueryReader(
-        source=self,
-        test_bigquery_client=test_bigquery_client,
-        use_legacy_sql=self.use_legacy_sql,
-        flatten_results=self.flatten_results,
-        kms_key=self.kms_key)
+  warnings.warn(
+      "Native sources no longer implemented; "
+      "falling back to standard Beam source.")
+  return ReadFromBigQuery(*args, **kwargs)
 
 
 # TODO(https://github.com/apache/beam/issues/21622): remove the serialization
@@ -1032,11 +909,10 @@ class _CustomBigQueryStorageSource(BoundedSource):
   """A base class for BoundedSource implementations which read from BigQuery
   using the BigQuery Storage API.
   Args:
-    table (str, TableReference): The ID of the table. The ID must contain only
-      letters ``a-z``, ``A-Z``, numbers ``0-9``, underscores ``_`` or white
-      spaces. If **dataset** argument is :data:`None` then the table
-      argument must contain the entire table reference specified as:
-      ``'PROJECT:DATASET.TABLE'`` or must specify a TableReference.
+    table (str, TableReference): The ID of the table. If **dataset** argument is
+      :data:`None` then the table argument must contain the entire table
+      reference specified as: ``'PROJECT:DATASET.TABLE'`` or must specify a
+      TableReference.
     dataset (str): Optional ID of the dataset containing this table or
       :data:`None` if the table argument specifies a TableReference.
     project (str): Optional ID of the project containing this table or
@@ -1415,169 +1291,12 @@ class _ReadReadRowsResponsesWithFastAvro():
 
 
 @deprecated(since='2.11.0', current="WriteToBigQuery")
-class BigQuerySink(dataflow_io.NativeSink):
-  """A sink based on a BigQuery table.
-
-  This BigQuery sink triggers a Dataflow native sink for BigQuery
-  that only supports batch pipelines.
-  Instead of using this sink directly, please use WriteToBigQuery
-  transform that works for both batch and streaming pipelines.
-  """
-  def __init__(
-      self,
-      table,
-      dataset=None,
-      project=None,
-      schema=None,
-      create_disposition=BigQueryDisposition.CREATE_IF_NEEDED,
-      write_disposition=BigQueryDisposition.WRITE_EMPTY,
-      validate=False,
-      coder=None,
-      kms_key=None):
-    """Initialize a BigQuerySink.
-
-    Args:
-      table (str): The ID of the table. The ID must contain only letters
-        ``a-z``, ``A-Z``, numbers ``0-9``, underscores ``_`` or or white
-        spaces. If **dataset** argument is :data:`None` then the table
-        argument must contain the entire table reference specified
-        as: ``'DATASET.TABLE'`` or ``'PROJECT:DATASET.TABLE'``.
-      dataset (str): The ID of the dataset containing this table or
-        :data:`None` if the table reference is specified entirely by the table
-        argument.
-      project (str): The ID of the project containing this table or
-        :data:`None` if the table reference is specified entirely by the table
-        argument.
-      schema (str): The schema to be used if the BigQuery table to write has
-        to be created. This can be either specified as a
-        :class:`~apache_beam.io.gcp.internal.clients.bigquery.\
-bigquery_v2_messages.TableSchema` object or a single string  of the form
-        ``'field1:type1,field2:type2,field3:type3'`` that defines a comma
-        separated list of fields. Here ``'type'`` should specify the BigQuery
-        type of the field. Single string based schemas do not support nested
-        fields, repeated fields, or specifying a BigQuery mode for fields (mode
-        will always be set to ``'NULLABLE'``).
-      create_disposition (BigQueryDisposition): A string describing what
-        happens if the table does not exist. Possible values are:
-
-          * :attr:`BigQueryDisposition.CREATE_IF_NEEDED`: create if does not
-            exist.
-          * :attr:`BigQueryDisposition.CREATE_NEVER`: fail the write if does not
-            exist.
-
-      write_disposition (BigQueryDisposition): A string describing what
-        happens if the table has already some data. Possible values are:
-
-          * :attr:`BigQueryDisposition.WRITE_TRUNCATE`: delete existing rows.
-          * :attr:`BigQueryDisposition.WRITE_APPEND`: add to existing rows.
-          * :attr:`BigQueryDisposition.WRITE_EMPTY`: fail the write if table not
-            empty.
-
-      validate (bool): If :data:`True`, various checks will be done when sink
-        gets initialized (e.g., is table present given the disposition
-        arguments?). This should be :data:`True` for most scenarios in order to
-        catch errors as early as possible (pipeline construction instead of
-        pipeline execution). It should be :data:`False` if the table is created
-        during pipeline execution by a previous step.
-      coder (~apache_beam.coders.coders.Coder): The coder for the
-        table rows if serialized to disk. If :data:`None`, then the default
-        coder is :class:`~apache_beam.io.gcp.bigquery_tools.RowAsDictJsonCoder`,
-        which will interpret every element written to the sink as a dictionary
-        that will be JSON serialized as a line in a file. This argument needs a
-        value only in special cases when writing table rows as dictionaries is
-        not desirable.
-      kms_key (str): Optional Cloud KMS key name for use when creating new
-        tables.
-
-    Raises:
-      TypeError: if the schema argument is not a :class:`str` or a
-        :class:`~apache_beam.io.gcp.internal.clients.bigquery.\
-bigquery_v2_messages.TableSchema` object.
-      ValueError: if the table reference as a string does not
-        match the expected format.
-    """
-    # Import here to avoid adding the dependency for local running scenarios.
-    try:
-      # pylint: disable=wrong-import-order, wrong-import-position
-      from apitools.base import py  # pylint: disable=unused-import
-    except ImportError:
-      raise ImportError(
-          'Google Cloud IO not available, '
-          'please install apache_beam[gcp]')
-
-    self.table_reference = bigquery_tools.parse_table_reference(
-        table, dataset, project)
-    # Transform the table schema into a bigquery.TableSchema instance.
-    if isinstance(schema, str):
-      # TODO(silviuc): Should add a regex-based validation of the format.
-      table_schema = bigquery.TableSchema()
-      schema_list = [s.strip(' ') for s in schema.split(',')]
-      for field_and_type in schema_list:
-        field_name, field_type = field_and_type.split(':')
-        field_schema = bigquery.TableFieldSchema()
-        field_schema.name = field_name
-        field_schema.type = field_type
-        field_schema.mode = 'NULLABLE'
-        table_schema.fields.append(field_schema)
-      self.table_schema = table_schema
-    elif schema is None:
-      # TODO(silviuc): Should check that table exists if no schema specified.
-      self.table_schema = schema
-    elif isinstance(schema, bigquery.TableSchema):
-      self.table_schema = schema
-    else:
-      raise TypeError('Unexpected schema argument: %s.' % schema)
-
-    self.create_disposition = BigQueryDisposition.validate_create(
-        create_disposition)
-    self.write_disposition = BigQueryDisposition.validate_write(
-        write_disposition)
-    self.validate = validate
-    self.coder = coder or bigquery_tools.RowAsDictJsonCoder()
-    self.kms_key = kms_key
-
-  def display_data(self):
-    res = {}
-    if self.table_reference is not None:
-      tableSpec = '{}.{}'.format(
-          self.table_reference.datasetId, self.table_reference.tableId)
-      if self.table_reference.projectId is not None:
-        tableSpec = '{}:{}'.format(self.table_reference.projectId, tableSpec)
-      res['table'] = DisplayDataItem(tableSpec, label='Table')
-
-    res['validation'] = DisplayDataItem(
-        self.validate, label="Validation Enabled")
-    return res
-
-  def schema_as_json(self):
-    """Returns the TableSchema associated with the sink as a JSON string."""
-    def schema_list_as_object(schema_list):
-      """Returns a list of TableFieldSchema objects as a list of dicts."""
-      fields = []
-      for f in schema_list:
-        fs = {'name': f.name, 'type': f.type}
-        if f.description is not None:
-          fs['description'] = f.description
-        if f.mode is not None:
-          fs['mode'] = f.mode
-        if f.type.lower() == 'record':
-          fs['fields'] = schema_list_as_object(f.fields)
-        fields.append(fs)
-      return fields
-
-    return json.dumps(
-        {'fields': schema_list_as_object(self.table_schema.fields)})
-
-  @property
-  def format(self):
-    """Sink format name required for remote execution."""
-    return 'bigquery'
-
-  def writer(self, test_bigquery_client=None, buffer_size=None):
-    return bigquery_tools.BigQueryWriter(
-        sink=self,
-        test_bigquery_client=test_bigquery_client,
-        buffer_size=buffer_size)
+def BigQuerySink(*args, validate=False, **kwargs):
+  """A deprecated alias for WriteToBigQuery."""
+  warnings.warn(
+      "Native sinks no longer implemented; "
+      "falling back to standard Beam sink.")
+  return WriteToBigQuery(*args, validate=validate, **kwargs)
 
 
 _KNOWN_TABLES = set()
@@ -1937,6 +1656,7 @@ class _StreamToBigQuery(PTransform):
       ignore_insert_ids,
       ignore_unknown_columns,
       with_auto_sharding,
+      num_streaming_keys=DEFAULT_SHARDS_PER_DESTINATION,
       test_client=None,
       max_retries=None):
     self.table_reference = table_reference
@@ -1954,6 +1674,7 @@ class _StreamToBigQuery(PTransform):
     self.ignore_insert_ids = ignore_insert_ids
     self.ignore_unknown_columns = ignore_unknown_columns
     self.with_auto_sharding = with_auto_sharding
+    self._num_streaming_keys = num_streaming_keys
     self.max_retries = max_retries or MAX_INSERT_RETRIES
 
   class InsertIdPrefixFn(DoFn):
@@ -1986,7 +1707,7 @@ class _StreamToBigQuery(PTransform):
     def _add_random_shard(element):
       key = element[0]
       value = element[1]
-      return ((key, random.randint(0, DEFAULT_SHARDS_PER_DESTINATION)), value)
+      return ((key, random.randint(0, self._num_streaming_keys)), value)
 
     def _restore_table_ref(sharded_table_ref_elems_kv):
       sharded_table_ref = sharded_table_ref_elems_kv[0]
@@ -2050,6 +1771,7 @@ class WriteToBigQuery(PTransform):
     DEFAULT = 'DEFAULT'
     STREAMING_INSERTS = 'STREAMING_INSERTS'
     FILE_LOADS = 'FILE_LOADS'
+    STORAGE_WRITE_API = 'STORAGE_WRITE_API'
 
   def __init__(
       self,
@@ -2071,6 +1793,7 @@ class WriteToBigQuery(PTransform):
       table_side_inputs=None,
       schema_side_inputs=None,
       triggering_frequency=None,
+      use_at_least_once=False,
       validate=True,
       temp_file_format=None,
       ignore_insert_ids=False,
@@ -2078,7 +1801,9 @@ class WriteToBigQuery(PTransform):
       # when the feature is mature.
       with_auto_sharding=False,
       ignore_unknown_columns=False,
-      load_job_project_id=None):
+      load_job_project_id=None,
+      num_streaming_keys=DEFAULT_SHARDS_PER_DESTINATION,
+      expansion_service=None):
     """Initialize a WriteToBigQuery transform.
 
     Args:
@@ -2146,8 +1871,9 @@ bigquery_v2_messages.TableSchema`. or a `ValueProvider` that has a JSON string,
         temp_location, but for pipelines whose temp_location is not appropriate
         for BQ File Loads, users should pass a specific one.
       method: The method to use to write to BigQuery. It may be
-        STREAMING_INSERTS, FILE_LOADS, or DEFAULT. An introduction on loading
-        data to BigQuery: https://cloud.google.com/bigquery/docs/loading-data.
+        STREAMING_INSERTS, FILE_LOADS, STORAGE_WRITE_API or DEFAULT. An
+        introduction on loading data to BigQuery:
+        https://cloud.google.com/bigquery/docs/loading-data.
         DEFAULT will use STREAMING_INSERTS on Streaming pipelines and
         FILE_LOADS on Batch pipelines.
         Note: FILE_LOADS currently does not support BigQuery's JSON data type:
@@ -2196,6 +1922,13 @@ bigquery_v2_messages.TableSchema`. or a `ValueProvider` that has a JSON string,
         triggering_frequency seconds when data is waiting. The batch can be
         sent earlier if it reaches the maximum batch size set by batch_size.
         Default value is 0.2 seconds.
+
+        When method is STORAGE_WRITE_API:
+        A stream of rows will be committed every triggering_frequency seconds.
+        By default, this will be 5 seconds to ensure exactly-once semantics.
+      use_at_least_once: Intended only for STORAGE_WRITE_API. When True, will
+        use at-least-once semantics. This is cheaper and provides lower
+        latency, but will potentially duplicate records.
       validate: Indicates whether to perform validation checks on
         inputs. This parameter is primarily used for testing.
       temp_file_format: The format to use for file loads into BigQuery. The
@@ -2213,8 +1946,8 @@ bigquery_v2_messages.TableSchema`. or a `ValueProvider` that has a JSON string,
         https://cloud.google.com/bigquery/streaming-data-into-bigquery#disabling_best_effort_de-duplication
       with_auto_sharding: Experimental. If true, enables using a dynamically
         determined number of shards to write to BigQuery. This can be used for
-        both FILE_LOADS and STREAMING_INSERTS. Only applicable to unbounded
-        input.
+        all of FILE_LOADS, STREAMING_INSERTS, and STORAGE_WRITE_API. Only
+        applicable to unbounded input.
       ignore_unknown_columns: Accept rows that contain values that do not match
         the schema. The unknown values are ignored. Default is False,
         which treats unknown values as errors. This option is only valid for
@@ -2223,6 +1956,11 @@ bigquery_v2_messages.TableSchema`. or a `ValueProvider` that has a JSON string,
       load_job_project_id: Specifies an alternate GCP project id to use for
         billingBatch File Loads. By default, the project id of the table is
         used.
+      num_streaming_keys: The number of shards per destination when writing via
+        streaming inserts.
+      expansion_service: The address (host:port) of the expansion service.
+        If no expansion service is provided, will attempt to run the default
+        GCP expansion service. Used for STORAGE_WRITE_API method.
     """
     self._table = table
     self._dataset = dataset
@@ -2247,6 +1985,8 @@ bigquery_v2_messages.TableSchema`. or a `ValueProvider` that has a JSON string,
     self.max_files_per_bundle = max_files_per_bundle
     self.method = method or WriteToBigQuery.Method.DEFAULT
     self.triggering_frequency = triggering_frequency
+    self.use_at_least_once = use_at_least_once
+    self.expansion_service = expansion_service
     self.with_auto_sharding = with_auto_sharding
     self.insert_retry_strategy = insert_retry_strategy
     self._validate = validate
@@ -2258,6 +1998,7 @@ bigquery_v2_messages.TableSchema`. or a `ValueProvider` that has a JSON string,
     self._ignore_insert_ids = ignore_insert_ids
     self._ignore_unknown_columns = ignore_unknown_columns
     self.load_job_project_id = load_job_project_id
+    self._num_streaming_keys = num_streaming_keys
 
   # Dict/schema methods were moved to bigquery_tools, but keep references
   # here for backward compatibility.
@@ -2320,14 +2061,15 @@ bigquery_v2_messages.TableSchema`. or a `ValueProvider` that has a JSON string,
           ignore_insert_ids=self._ignore_insert_ids,
           ignore_unknown_columns=self._ignore_unknown_columns,
           with_auto_sharding=self.with_auto_sharding,
-          test_client=self.test_client)
+          test_client=self.test_client,
+          num_streaming_keys=self._num_streaming_keys)
 
       return WriteResult(
           method=WriteToBigQuery.Method.STREAMING_INSERTS,
           failed_rows=outputs[BigQueryWriteFn.FAILED_ROWS],
           failed_rows_with_errors=outputs[
               BigQueryWriteFn.FAILED_ROWS_WITH_ERRORS])
-    else:
+    elif method_to_use == WriteToBigQuery.Method.FILE_LOADS:
       if self._temp_file_format == bigquery_tools.FileFormat.AVRO:
         if self.schema == SCHEMA_AUTODETECT:
           raise ValueError(
@@ -2366,6 +2108,7 @@ bigquery_v2_messages.TableSchema`. or a `ValueProvider` that has a JSON string,
       output = pcoll | BigQueryBatchFileLoads(
           destination=self.table_reference,
           schema=self.schema,
+          project=self._project,
           create_disposition=self.create_disposition,
           write_disposition=self.write_disposition,
           triggering_frequency=triggering_frequency,
@@ -2390,6 +2133,57 @@ bigquery_v2_messages.TableSchema`. or a `ValueProvider` that has a JSON string,
               BigQueryBatchFileLoads.DESTINATION_FILE_PAIRS],
           destination_copy_jobid_pairs=output[
               BigQueryBatchFileLoads.DESTINATION_COPY_JOBID_PAIRS])
+    else:
+      # Storage Write API
+      if self.schema is None:
+        raise AttributeError(
+            "A schema is required in order to prepare rows"
+            "for writing with STORAGE_WRITE_API.")
+      if callable(self.schema):
+        raise NotImplementedError(
+            "Writing to dynamic destinations is not"
+            "supported for this write method.")
+      elif isinstance(self.schema, vp.ValueProvider):
+        schema = self.schema.get()
+      else:
+        schema = self.schema
+
+      table = bigquery_tools.get_hashable_destination(self.table_reference)
+      # None type is not supported
+      triggering_frequency = self.triggering_frequency or 0
+      # SchemaTransform expects Beam Rows, so map to Rows first
+      output_beam_rows = (
+          pcoll
+          |
+          beam.Map(lambda row: bigquery_tools.beam_row_from_dict(row, schema)).
+          with_output_types(
+              RowTypeConstraint.from_fields(
+                  bigquery_tools.get_beam_typehints_from_tableschema(schema)))
+          | StorageWriteToBigQuery(
+              table=table,
+              create_disposition=self.create_disposition,
+              write_disposition=self.write_disposition,
+              triggering_frequency=triggering_frequency,
+              use_at_least_once=self.use_at_least_once,
+              with_auto_sharding=self.with_auto_sharding,
+              expansion_service=self.expansion_service))
+
+      # return back from Beam Rows to Python dict elements
+      failed_rows = (
+          output_beam_rows[StorageWriteToBigQuery.FAILED_ROWS]
+          | beam.Map(lambda row: row.as_dict()))
+      failed_rows_with_errors = (
+          output_beam_rows[StorageWriteToBigQuery.FAILED_ROWS_WITH_ERRORS]
+          | beam.Map(
+              lambda row: {
+                  "error_message": row.error_message,
+                  "failed_row": row.failed_row.as_dict()
+              }))
+
+      return WriteResult(
+          method=WriteToBigQuery.Method.STORAGE_WRITE_API,
+          failed_rows=failed_rows,
+          failed_rows_with_errors=failed_rows_with_errors)
 
   def display_data(self):
     res = {}
@@ -2400,6 +2194,9 @@ bigquery_v2_messages.TableSchema`. or a `ValueProvider` that has a JSON string,
       if self.table_reference.projectId is not None:
         tableSpec = '{}:{}'.format(self.table_reference.projectId, tableSpec)
       res['table'] = DisplayDataItem(tableSpec, label='Table')
+
+    res['validation'] = DisplayDataItem(
+        self._validate, label="Validation Enabled")
     return res
 
   def to_runner_api_parameter(self, context):
@@ -2506,12 +2303,12 @@ class WriteResult:
         destination_copy_jobid_pairs,
     }
 
-  def validate(self, method, attribute):
-    if self._method != method:
+  def validate(self, valid_methods, attribute):
+    if self._method not in valid_methods:
       raise AttributeError(
           f'Cannot get {attribute} because it is not produced '
           f'by the {self._method} write method. Note: only '
-          f'{method} produces this attribute.')
+          f'{valid_methods} produces this attribute.')
 
   @property
   def destination_load_jobid_pairs(
@@ -2523,7 +2320,8 @@ class WriteResult:
 
     Raises: AttributeError: if accessed with a write method
     besides ``FILE_LOADS``."""
-    self.validate(WriteToBigQuery.Method.FILE_LOADS, 'DESTINATION_JOBID_PAIRS')
+    self.validate([WriteToBigQuery.Method.FILE_LOADS],
+                  'DESTINATION_JOBID_PAIRS')
 
     return self._destination_load_jobid_pairs
 
@@ -2536,7 +2334,7 @@ class WriteResult:
 
     Raises: AttributeError: if accessed with a write method
     besides ``FILE_LOADS``."""
-    self.validate(WriteToBigQuery.Method.FILE_LOADS, 'DESTINATION_FILE_PAIRS')
+    self.validate([WriteToBigQuery.Method.FILE_LOADS], 'DESTINATION_FILE_PAIRS')
 
     return self._destination_file_pairs
 
@@ -2550,26 +2348,30 @@ class WriteResult:
 
     Raises: AttributeError: if accessed with a write method
     besides ``FILE_LOADS``."""
-    self.validate(
-        WriteToBigQuery.Method.FILE_LOADS, 'DESTINATION_COPY_JOBID_PAIRS')
+    self.validate([WriteToBigQuery.Method.FILE_LOADS],
+                  'DESTINATION_COPY_JOBID_PAIRS')
 
     return self._destination_copy_jobid_pairs
 
   @property
   def failed_rows(self) -> PCollection[Tuple[str, dict]]:
-    """A ``STREAMING_INSERTS`` method attribute
+    """A ``[STREAMING_INSERTS, STORAGE_WRITE_API]`` method attribute
 
     Returns: A PCollection of rows that failed when inserting to BigQuery.
 
     Raises: AttributeError: if accessed with a write method
-    besides ``STREAMING_INSERTS``."""
-    self.validate(WriteToBigQuery.Method.STREAMING_INSERTS, 'FAILED_ROWS')
+    besides ``[STREAMING_INSERTS, STORAGE_WRITE_API]``."""
+    self.validate([
+        WriteToBigQuery.Method.STREAMING_INSERTS,
+        WriteToBigQuery.Method.STORAGE_WRITE_API
+    ],
+                  'FAILED_ROWS')
 
     return self._failed_rows
 
   @property
   def failed_rows_with_errors(self) -> PCollection[Tuple[str, dict, list]]:
-    """A ``STREAMING_INSERTS`` method attribute
+    """A ``[STREAMING_INSERTS, STORAGE_WRITE_API]`` method attribute
 
     Returns:
       A PCollection of rows that failed when inserting to BigQuery,
@@ -2577,9 +2379,12 @@ class WriteResult:
 
     Raises:
       AttributeError: if accessed with a write method
-      besides ``STREAMING_INSERTS``."""
-    self.validate(
-        WriteToBigQuery.Method.STREAMING_INSERTS, 'FAILED_ROWS_WITH_ERRORS')
+      besides ``[STREAMING_INSERTS, STORAGE_WRITE_API]``."""
+    self.validate([
+        WriteToBigQuery.Method.STREAMING_INSERTS,
+        WriteToBigQuery.Method.STORAGE_WRITE_API
+    ],
+                  'FAILED_ROWS_WITH_ERRORS')
 
     return self._failed_rows_with_errors
 
@@ -2590,6 +2395,89 @@ class WriteResult:
           'result. Please see __documentation__ for available attributes.')
 
     return self.attributes[key].__get__(self, WriteResult)
+
+
+def _default_io_expansion_service(append_args=None):
+  return BeamJarExpansionService(
+      'sdks:java:io:google-cloud-platform:expansion-service:build',
+      append_args=append_args)
+
+
+class StorageWriteToBigQuery(PTransform):
+  """Writes data to BigQuery using Storage API.
+
+  Experimental; no backwards compatibility guarantees.
+  """
+  URN = "beam:schematransform:org.apache.beam:bigquery_storage_write:v1"
+  FAILED_ROWS = "FailedRows"
+  FAILED_ROWS_WITH_ERRORS = "FailedRowsWithErrors"
+
+  def __init__(
+      self,
+      table,
+      create_disposition=BigQueryDisposition.CREATE_IF_NEEDED,
+      write_disposition=BigQueryDisposition.WRITE_APPEND,
+      triggering_frequency=0,
+      use_at_least_once=False,
+      with_auto_sharding=False,
+      expansion_service=None):
+    """Initialize a StorageWriteToBigQuery transform.
+
+    :param table:
+      Fully-qualified table ID specified as ``'PROJECT:DATASET.TABLE'``.
+    :param create_disposition:
+      String specifying the strategy to take when the table doesn't
+      exist. Possible values are:
+      * ``'CREATE_IF_NEEDED'``: create if does not exist.
+      * ``'CREATE_NEVER'``: fail the write if does not exist.
+    :param write_disposition:
+      String specifying the strategy to take when the table already
+      contains data. Possible values are:
+      * ``'WRITE_TRUNCATE'``: delete existing rows.
+      * ``'WRITE_APPEND'``: add to existing rows.
+      * ``'WRITE_EMPTY'``: fail the write if table not empty.
+    :param triggering_frequency:
+      The time in seconds between write commits. Should only be specified
+      for streaming pipelines. Defaults to 5 seconds.
+    :param use_at_least_once:
+      Use at-least-once semantics. Is cheaper and provides lower latency,
+      but will potentially duplicate records.
+    :param with_auto_sharding:
+      Experimental. If true, enables using a dynamically determined number of
+      shards to write to BigQuery. Only applicable to unbounded input.
+    :param expansion_service:
+      The address (host:port) of the expansion service. If no expansion
+      service is provided, will attempt to run the default GCP expansion
+      service.
+    """
+    super().__init__()
+    self._table = table
+    self._create_disposition = create_disposition
+    self._write_disposition = write_disposition
+    self._triggering_frequency = triggering_frequency
+    self._use_at_least_once = use_at_least_once
+    self._with_auto_sharding = with_auto_sharding
+    self._expansion_service = (
+        expansion_service or _default_io_expansion_service())
+    self.schematransform_config = SchemaAwareExternalTransform.discover_config(
+        self._expansion_service, self.URN)
+
+  def expand(self, input):
+    external_storage_write = SchemaAwareExternalTransform(
+        identifier=self.schematransform_config.identifier,
+        expansion_service=self._expansion_service,
+        rearrange_based_on_discovery=True,
+        autoSharding=self._with_auto_sharding,
+        createDisposition=self._create_disposition,
+        table=self._table,
+        triggeringFrequencySeconds=self._triggering_frequency,
+        useAtLeastOnceSemantics=self._use_at_least_once,
+        writeDisposition=self._write_disposition,
+    )
+
+    input_tag = self.schematransform_config.inputs[0]
+
+    return {input_tag: input} | external_storage_write
 
 
 class ReadFromBigQuery(PTransform):
@@ -2612,13 +2500,12 @@ class ReadFromBigQuery(PTransform):
       be returned as native Python datetime objects. This can only be used when
       'method' is 'DIRECT_READ'.
     table (str, callable, ValueProvider): The ID of the table, or a callable
-      that returns it. The ID must contain only letters ``a-z``, ``A-Z``,
-      numbers ``0-9``, underscores ``_`` or white spaces. If dataset argument is
-      :data:`None` then the table argument must contain the entire table
-      reference specified as: ``'DATASET.TABLE'``
-      or ``'PROJECT:DATASET.TABLE'``. If it's a callable, it must receive one
-      argument representing an element to be written to BigQuery, and return
-      a TableReference, or a string table name as specified above.
+      that returns it. If dataset argument is :data:`None` then the table
+      argument must contain the entire table reference specified as:
+      ``'DATASET.TABLE'`` or ``'PROJECT:DATASET.TABLE'``. If it's a callable,
+      it must receive one argument representing an element to be written to
+      BigQuery, and return a TableReference, or a string table name as specified
+      above.
     dataset (str): The ID of the dataset containing this table or
       :data:`None` if the table reference is specified entirely by the table
       argument.
@@ -2683,7 +2570,13 @@ class ReadFromBigQuery(PTransform):
       to run queries with INTERACTIVE priority. This option is ignored when
       reading from a table rather than a query. To learn more about query
       priority, see: https://cloud.google.com/bigquery/docs/running-queries
-   """
+    output_type (str): By default, this source yields Python dictionaries
+      (`PYTHON_DICT`). There is experimental support for producing a
+      PCollection with a schema and yielding Beam Rows via the option
+      `BEAM_ROW`. For more information on schemas, see
+      https://beam.apache.org/documentation/programming-guide/\
+      #what-is-a-schema)
+      """
   class Method(object):
     EXPORT = 'EXPORT'  #  This is currently the default.
     DIRECT_READ = 'DIRECT_READ'
@@ -2695,10 +2588,14 @@ class ReadFromBigQuery(PTransform):
       gcs_location=None,
       method=None,
       use_native_datetime=False,
+      output_type=None,
       *args,
       **kwargs):
     self.method = method or ReadFromBigQuery.Method.EXPORT
     self.use_native_datetime = use_native_datetime
+    self.output_type = output_type
+    self._args = args
+    self._kwargs = kwargs
 
     if self.method is ReadFromBigQuery.Method.EXPORT \
         and self.use_native_datetime is True:
@@ -2716,22 +2613,51 @@ class ReadFromBigQuery(PTransform):
       if isinstance(gcs_location, str):
         gcs_location = StaticValueProvider(str, gcs_location)
 
+    if self.output_type == 'BEAM_ROW' and self._kwargs.get('query',
+                                                           None) is not None:
+      raise ValueError(
+          "Both a query and an output type of 'BEAM_ROW' were specified. "
+          "'BEAM_ROW' is not currently supported with queries.")
+
     self.gcs_location = gcs_location
     self.bigquery_dataset_labels = {
         'type': 'bq_direct_read_' + str(uuid.uuid4())[0:10]
     }
-    self._args = args
-    self._kwargs = kwargs
 
   def expand(self, pcoll):
     if self.method is ReadFromBigQuery.Method.EXPORT:
-      return self._expand_export(pcoll)
+      output_pcollection = self._expand_export(pcoll)
     elif self.method is ReadFromBigQuery.Method.DIRECT_READ:
-      return self._expand_direct_read(pcoll)
+      output_pcollection = self._expand_direct_read(pcoll)
+
     else:
       raise ValueError(
           'The method to read from BigQuery must be either EXPORT'
           'or DIRECT_READ.')
+    return self._expand_output_type(output_pcollection)
+
+  def _expand_output_type(self, output_pcollection):
+    if self.output_type == 'PYTHON_DICT' or self.output_type is None:
+      return output_pcollection
+    elif self.output_type == 'BEAM_ROW':
+      table_details = bigquery_tools.parse_table_reference(
+          table=self._kwargs.get("table", None),
+          dataset=self._kwargs.get("dataset", None),
+          project=self._kwargs.get("project", None))
+      if isinstance(self._kwargs['table'], ValueProvider):
+        raise TypeError(
+            '%s: table must be of type string'
+            '; got ValueProvider instead' % self.__class__.__name__)
+      elif callable(self._kwargs['table']):
+        raise TypeError(
+            '%s: table must be of type string'
+            '; got a callable instead' % self.__class__.__name__)
+      return output_pcollection | bigquery_schema_tools.\
+            convert_to_usertype(
+            bigquery_tools.BigQueryWrapper().get_table(
+                project_id=table_details.projectId,
+                dataset_id=table_details.datasetId,
+                table_id=table_details.tableId).schema)
 
   def _expand_export(self, pcoll):
     # TODO(https://github.com/apache/beam/issues/20683): Make ReadFromBQ rely
@@ -2831,9 +2757,7 @@ class ReadFromBigQueryRequest:
       the query will use BigQuery's legacy SQL dialect.
       This parameter is ignored for table inputs.
     :param table:
-      The ID of the table to read. The ID must contain only letters
-      ``a-z``, ``A-Z``, numbers ``0-9``, underscores ``_`` or white spaces.
-      Table should define project and dataset
+      The ID of the table to read. Table should define project and dataset
       (ex.: ``'PROJECT:DATASET.TABLE'``).
     :param flatten_results:
       Flattens all nested and repeated fields in the query results.

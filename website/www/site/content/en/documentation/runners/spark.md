@@ -59,8 +59,8 @@ the portable Runner. For more information on portability, please visit the
 <nav class="language-switcher">
   <strong>Adapt for:</strong>
   <ul>
-    <li data-type="language-java">Non portable (Java)</li>
-    <li data-type="language-py">Portable (Java/Python/Go)</li>
+    <li data-value="java">Non portable (Java)</li>
+    <li data-value="py">Portable (Java/Python/Go)</li>
   </ul>
 </nav>
 
@@ -68,7 +68,7 @@ the portable Runner. For more information on portability, please visit the
 ## Spark Runner prerequisites and setup
 
 The Spark runner currently supports Spark's 3.1.x branch.
-> **Note:** Support for Spark 2.4.x is deprecated and will be dropped with the release of Beam 2.44.0 (or soon after).
+> **Note:** Support for Spark 2.4.x was deprecated as of Beam 2.41.0 and finally dropped with the release of Beam 2.46.0.
 
 {{< paragraph class="language-java" >}}
 You can add a dependency on the latest version of the Spark runner by adding to your pom.xml the following:
@@ -243,7 +243,7 @@ See [here](/roadmap/portability/#sdk-harness-config) for details.)
 
 ###  Running on Dataproc cluster (YARN backed)
 
-To run Beam jobs written in Python, Go, and other supported languages, you can use the `SparkRunner` and `PortableRunner` as described on the Beam's [Spark Runner](https://beam.apache.org/documentation/runners/spark/) page (also see [Portability Framework Roadmap](https://beam.apache.org/roadmap/portability/)).
+To run Beam jobs written in Python, Go, and other supported languages, you can use the `SparkRunner` and `PortableRunner` as described on the Beam's [Spark Runner](/documentation/runners/spark/) page (also see [Portability Framework Roadmap](/roadmap/portability/)).
 
 The following example runs a portable Beam job in Python from the Dataproc cluster's master node with Yarn backed.
 
@@ -293,7 +293,7 @@ python -m apache_beam.examples.wordcount \
 - `--runner`(required): `SparkRunner`.
 - `--output_executable_path`(required): path for the bundle jar to be created.
 - `--output`(required): where output shall be written.
-- `--spark_version`(optional): select spark version 2 (default) or 3.
+- `--spark_version`(optional): select spark version 3 (default) or 2 (deprecated!).
 
 5. Submit spark job to Dataproc cluster's master node.
 
@@ -325,6 +325,7 @@ When executing your pipeline with the Spark Runner, you should consider the foll
 <br><b>For RDD/DStream based runner:</b><br>
 {{< /paragraph >}}
 
+<div class="table-container-wrapper">
 <table class="language-java table table-bordered">
 <tr>
   <th>Field</th>
@@ -362,11 +363,13 @@ When executing your pipeline with the Spark Runner, you should consider the foll
   <td>false</td>
 </tr>
 </table>
+</div>
 
 {{< paragraph class="language-java" >}}
 <br><b>For Structured Streaming based runner:</b><br>
 {{< /paragraph >}}
 
+<div class="table-container-wrapper">
 <table class="language-java table table-bordered">
 <tr>
   <th>Field</th>
@@ -409,7 +412,9 @@ When executing your pipeline with the Spark Runner, you should consider the foll
   <td>true</td>
 </tr>
 </table>
+</div>
 
+<div class="table-container-wrapper">
 <table class="language-py table table-bordered">
 <tr>
   <th>Field</th>
@@ -427,6 +432,7 @@ When executing your pipeline with the Spark Runner, you should consider the foll
   <td>Set to match your job service endpoint (localhost:8099 by default)</td>
 </tr>
 </table>
+</div>
 
 ## Additional notes
 

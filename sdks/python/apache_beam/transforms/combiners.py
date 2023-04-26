@@ -47,7 +47,22 @@ from apache_beam.utils.timestamp import Duration
 from apache_beam.utils.timestamp import Timestamp
 
 __all__ = [
-    'Count', 'Mean', 'Sample', 'Top', 'ToDict', 'ToList', 'ToSet', 'Latest'
+    'Count',
+    'Mean',
+    'Sample',
+    'Top',
+    'ToDict',
+    'ToList',
+    'ToSet',
+    'Latest',
+    'CountCombineFn',
+    'MeanCombineFn',
+    'SampleCombineFn',
+    'TopCombineFn',
+    'ToDictCombineFn',
+    'ToListCombineFn',
+    'ToSetCombineFn',
+    'LatestCombineFn',
 ]
 
 # Type variables
@@ -278,33 +293,33 @@ class Top(object):
 
   @staticmethod
   @ptransform.ptransform_fn
-  def Largest(pcoll, n, has_defaults=True):
+  def Largest(pcoll, n, has_defaults=True, key=None):
     """Obtain a list of the greatest N elements in a PCollection."""
     if has_defaults:
-      return pcoll | Top.Of(n)
+      return pcoll | Top.Of(n, key)
     else:
-      return pcoll | Top.Of(n).without_defaults()
+      return pcoll | Top.Of(n, key).without_defaults()
 
   @staticmethod
   @ptransform.ptransform_fn
-  def Smallest(pcoll, n, has_defaults=True):
+  def Smallest(pcoll, n, has_defaults=True, key=None):
     """Obtain a list of the least N elements in a PCollection."""
     if has_defaults:
-      return pcoll | Top.Of(n, reverse=True)
+      return pcoll | Top.Of(n, key, reverse=True)
     else:
-      return pcoll | Top.Of(n, reverse=True).without_defaults()
+      return pcoll | Top.Of(n, key, reverse=True).without_defaults()
 
   @staticmethod
   @ptransform.ptransform_fn
-  def LargestPerKey(pcoll, n):
+  def LargestPerKey(pcoll, n, key=None):
     """Identifies the N greatest elements associated with each key."""
-    return pcoll | Top.PerKey(n)
+    return pcoll | Top.PerKey(n, key)
 
   @staticmethod
   @ptransform.ptransform_fn
-  def SmallestPerKey(pcoll, n, reverse=True):
+  def SmallestPerKey(pcoll, n, *, key=None, reverse=None):
     """Identifies the N least elements associated with each key."""
-    return pcoll | Top.PerKey(n, reverse=True)
+    return pcoll | Top.PerKey(n, key, reverse=True)
 
 
 @with_input_types(T)
