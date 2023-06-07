@@ -328,6 +328,7 @@ class TFTProcessHandlerSchema(
       A dictionary of column names and transformed data.
     """
     outputs = inputs.copy()
+    intermediate_results = {}
     for transform in self.transforms:
       columns = transform.columns
       for col in columns:
@@ -335,10 +336,23 @@ class TFTProcessHandlerSchema(
         if artifacts:
           for key, value in artifacts.items():
             outputs[key] = value
-        intermediate_result = transform.apply(outputs[col])
+
+        dynamic_input_params = transform.input_params
+        dynamic_input_param_values = {}
+        if dynamic_input_params:
+          dynamic_input_param_values = transform.get_dynamic_inputs(
+              intermediate_results={
+                  **intermediate_results, **inputs, **outputs
+              },
+          )
+        intermediate_result = transform.apply(
+            outputs[col], run_time_inputs=dynamic_input_param_values)
         if transform._save_result:
-          outputs[transform._output_name] = intermediate_result
-        outputs[col] = intermediate_result
+          intermediate_results[transform._output_name] = intermediate_result
+        # replace the input with the intermediate result
+        # only when the transform is inplace.
+        if transform._replace_input:
+          outputs[col] = intermediate_result
     return outputs
 
   def _get_transformed_data_schema(
