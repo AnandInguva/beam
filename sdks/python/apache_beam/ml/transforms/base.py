@@ -89,19 +89,11 @@ class BaseOperation(Generic[OperationInputT, OperationOutputT], abc.ABC):
     return transformed_data
 
 
-class ProcessHandler(Generic[ExampleT, MLTransformOutputT], abc.ABC):
+class ProcessHandler(beam.PTransform[beam.PCollection[ExampleT],
+                                     beam.PCollection[MLTransformOutputT]]):
   """
   Only for internal use. No backwards compatibility guarantees.
   """
-  @abc.abstractmethod
-  def process_data(
-      self, pcoll: beam.PCollection[ExampleT]
-  ) -> beam.PCollection[MLTransformOutputT]:
-    """
-    Logic to process the data. This will be the entrypoint in
-    beam.MLTransform to process incoming data.
-    """
-
   @abc.abstractmethod
   def append_transform(self, transform: BaseOperation):
     """
@@ -211,7 +203,7 @@ class MLTransform(beam.PTransform[beam.PCollection[ExampleT],
     Returns:
       A PCollection of MLTransformOutputT type.
     """
-    return self._process_handler.process_data(pcoll)
+    return (pcoll | "BeamMLTransform" >> self._process_handler)
 
   def with_transform(self, transform: BaseOperation):
     """

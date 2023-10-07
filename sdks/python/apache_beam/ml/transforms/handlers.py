@@ -387,7 +387,7 @@ class TFTProcessHandler(ProcessHandler[tft_process_handler_input_type,
         transformed_types[name] = typing.Sequence[bytes]  # type: ignore[assignment]
     return transformed_types
 
-  def process_data(
+  def expand(
       self, raw_data: beam.PCollection[tft_process_handler_input_type]
   ) -> beam.PCollection[tft_process_handler_output_type]:
     """
