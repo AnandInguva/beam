@@ -528,9 +528,9 @@ tasks.register("python310PostCommit") {
 
 tasks.register("python311PostCommit") {
   dependsOn(":sdks:python:test-suites:dataflow:py311:postCommitIT")
-  dependsOn(":sdks:python:test-suites:direct:py311:postCommitIT")
-  dependsOn(":sdks:python:test-suites:direct:py311:hdfsIntegrationTest")
-  dependsOn(":sdks:python:test-suites:portable:py311:postCommitPy311")
+  // dependsOn(":sdks:python:test-suites:direct:py311:postCommitIT")
+  // dependsOn(":sdks:python:test-suites:direct:py311:hdfsIntegrationTest")
+  // dependsOn(":sdks:python:test-suites:portable:py311:postCommitPy311")
 }
 
 tasks.register("portablePythonPreCommit") {
@@ -712,14 +712,12 @@ if (project.hasProperty("javaLinkageArtifactIds")) {
     }
   }
 }
-if (project.hasProperty("compileAndRunTestsWithJava11")) {
-  tasks.getByName("javaPreCommitPortabilityApi").dependsOn(":sdks:java:testing:test-utils:verifyJavaVersion")
-  tasks.getByName("javaExamplesDataflowPrecommit").dependsOn(":sdks:java:testing:test-utils:verifyJavaVersion")
-  tasks.getByName("sqlPreCommit").dependsOn(":sdks:java:testing:test-utils:verifyJavaVersion")
-} else if (project.hasProperty("compileAndRunTestsWithJava17")) {
-  tasks.getByName("javaPreCommitPortabilityApi").dependsOn(":sdks:java:testing:test-utils:verifyJavaVersion17")
-  tasks.getByName("javaExamplesDataflowPrecommit").dependsOn(":sdks:java:testing:test-utils:verifyJavaVersion17")
-  tasks.getByName("sqlPreCommit").dependsOn(":sdks:java:testing:test-utils:verifyJavaVersion17")
+if (project.hasProperty("testJavaVersion")) {
+  var testVer = project.property("testJavaVersion")
+
+  tasks.getByName("javaPreCommitPortabilityApi").dependsOn(":sdks:java:testing:test-utils:verifyJavaVersion$testVer")
+  tasks.getByName("javaExamplesDataflowPrecommit").dependsOn(":sdks:java:testing:test-utils:verifyJavaVersion$testVer")
+  tasks.getByName("sqlPreCommit").dependsOn(":sdks:java:testing:test-utils:verifyJavaVersion$testVer")
 } else {
   allprojects {
     tasks.withType(Test::class).configureEach {

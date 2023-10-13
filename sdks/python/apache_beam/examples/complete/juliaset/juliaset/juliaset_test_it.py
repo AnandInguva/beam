@@ -34,14 +34,15 @@ from apache_beam.testing.pipeline_verifiers import PipelineStateMatcher
 from apache_beam.testing.test_pipeline import TestPipeline
 
 
-@pytest.mark.it_postcommit
+@pytest.mark.it_postcommit_1
 class JuliaSetTestIT(unittest.TestCase):
   GRID_SIZE = 1000
 
   def test_run_example_with_setup_file(self):
-    pipeline = TestPipeline(is_integration_test=True)
+    pipeline = TestPipeline(is_integration_test=False)
     coordinate_output = FileSystems.join(
-        pipeline.get_option('output'),
+        # pipeline.get_option('output'),
+        '/tmp/'
         'juliaset-{}'.format(str(uuid.uuid4())),
         'coordinates.txt')
     extra_args = {

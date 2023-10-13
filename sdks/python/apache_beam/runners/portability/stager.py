@@ -793,7 +793,13 @@ class Stager(object):
               temp_dir
           ]
       _LOGGER.info('Executing command: %s', build_setup_args)
-      processes.check_output(build_setup_args)
+      import subprocess
+      try:
+        out = subprocess.run(build_setup_args, capture_output=True, check=True)
+        print(out.stdout)
+      except subprocess.CalledProcessError as e:
+        _LOGGER.error('Failed to build setup package: %s', e.output)
+        raise
       output_files = glob.glob(os.path.join(temp_dir, '*.tar.gz'))
       if not output_files:
         raise RuntimeError(
