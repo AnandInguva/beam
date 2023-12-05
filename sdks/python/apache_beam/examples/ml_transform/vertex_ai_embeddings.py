@@ -22,13 +22,15 @@ from apache_beam.ml.transforms.base import MLTransform
 from apache_beam.ml.transforms.embeddings.vertex_ai import VertexAITextEmbeddings
 from apache_beam.options.pipeline_options import PipelineOptions
 
-
+"""
+python sdks/python/apache_beam/examples/ml_transform/vertex_ai_embeddings.py --project=google.com:clouddfe --region=us-central1 --runner=DataflowRunner --save_main_session --temp_location=gs://anandinguva-test/temp --sdk_location=dist/apache-beam-2.53.0.dev0.tar.gz
+"""
 
 
 text_column = 'x'
 numeric_column = 'y'
 ARTIFACT_LOCATION = 'gs://anandinguva-test/artifacts'
-MODEL_NAME = 'textembedding-gecko@001'
+MODEL_NAME = 'textembedding-gecko@002'
 
 # dummy data
 # TODO: replace with better data
