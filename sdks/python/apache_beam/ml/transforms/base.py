@@ -249,34 +249,36 @@ class MLTransform(beam.PTransform[beam.PCollection[ExampleT],
         i-th transform is the output of the (i-1)-th transform. Multi-input
         transforms are not supported yet.
     """
+    self._unallowed_transforms = []
+    if not read_artifact_location and not write_artifact_location:
+      self._unallowed_transforms.append(BaseOperation)
+      self._parent_artifact_location = None
+      self.artifact_mode = None
+    else:
+      self._verify_artifact_location_arg(
+          read_artifact_location, write_artifact_location)
+      if read_artifact_location:
+        artifact_location = read_artifact_location
+        artifact_mode = ArtifactMode.CONSUME
+        if transforms:
+          raise ValueError(
+              'Transforms should not be passed in read mode. In read mode, '
+              'the transforms are read from the artifact location.')
+      else:
+        artifact_location = write_artifact_location  # type: ignore[assignment]
+        artifact_mode = ArtifactMode.PRODUCE
+      self._parent_artifact_location = artifact_location
+      self._artifact_mode = artifact_mode
+    self.transforms = transforms or []
+    self._counter = Metrics.counter(
+        MLTransform, f'BeamML_{self.__class__.__name__}')
+
+  def _verify_artifact_location_arg(
+      self, read_artifact_location, write_artifact_location):
     if read_artifact_location and write_artifact_location:
       raise ValueError(
           'Only one of read_artifact_location or write_artifact_location can '
           'be specified to initialize MLTransform')
-
-    if not read_artifact_location and not write_artifact_location:
-      raise ValueError(
-          'Either a read_artifact_location or write_artifact_location must be '
-          'specified to initialize MLTransform')
-
-    if read_artifact_location:
-      artifact_location = read_artifact_location
-      artifact_mode = ArtifactMode.CONSUME
-      if transforms:
-        raise ValueError(
-            'Transforms should not be passed in read mode. In read mode, '
-            'the transforms are read from the artifact location.')
-
-    else:
-      artifact_location = write_artifact_location  # type: ignore[assignment]
-      artifact_mode = ArtifactMode.PRODUCE
-
-    self._parent_artifact_location = artifact_location
-
-    self._artifact_mode = artifact_mode
-    self.transforms = transforms or []
-    self._counter = Metrics.counter(
-        MLTransform, f'BeamML_{self.__class__.__name__}')
 
   def expand(
       self, pcoll: beam.PCollection[ExampleT]
@@ -295,23 +297,38 @@ class MLTransform(beam.PTransform[beam.PCollection[ExampleT],
       A PCollection of MLTransformOutputT type
     """
     _ = [self._validate_transform(transform) for transform in self.transforms]
-    if self._artifact_mode == ArtifactMode.PRODUCE:
-      ptransform_partitioner = _MLTransformToPTransformMapper(
-          transforms=self.transforms,
-          artifact_location=self._parent_artifact_location,
-          artifact_mode=self._artifact_mode,
-          pipeline_options=pcoll.pipeline.options)
-      ptransform_list = ptransform_partitioner.create_and_save_ptransform_list()
+    # artifact location is not specified. That means the transforms doesn't
+    # output any artifacts. In this case, the transforms must be instances of
+    # specific types(for example, EmbeddingsManager).
+    if not self._parent_artifact_location:
+      for transform in self.transforms:
+        if isinstance(transform, tuple(self._unallowed_transforms)):
+          raise TypeError(
+              f'Transforms must not be an instances of {type(transform)} '
+              f'if both write_artifact_location or read_artifact_location are '
+              f'not specified. To work with {type(transform)}, please specify '
+              f'write_artifact_location or read_artifact_location.')
+      ptransform_list = _MLTransformToPTransformMapper(
+          transforms=self.transforms).create_ptransform_list()
     else:
-      ptransform_list = (
-          _MLTransformToPTransformMapper.load_transforms_from_artifact_location(
-              self._parent_artifact_location))
-
-      # the saved transforms has artifact mode set to PRODUCE.
-      # set the artifact mode to CONSUME.
-      for i in range(len(ptransform_list)):
-        if hasattr(ptransform_list[i], 'artifact_mode'):
-          ptransform_list[i].artifact_mode = self._artifact_mode
+      if self._artifact_mode == ArtifactMode.PRODUCE:
+        ptransform_partitioner = _MLTransformToPTransformMapper(
+            transforms=self.transforms,
+            artifact_location=self._parent_artifact_location,
+            artifact_mode=self._artifact_mode,
+            pipeline_options=pcoll.pipeline.options)
+        ptransform_list = (
+            ptransform_partitioner.create_and_save_ptransform_list())
+      else:
+        ptransform_list = (
+            _MLTransformToPTransformMapper.
+            load_transforms_from_artifact_location(
+                self._parent_artifact_location))
+        # the saved transforms has artifact mode set to PRODUCE.
+        # set the artifact mode to CONSUME.
+        for i in range(len(ptransform_list)):
+          if hasattr(ptransform_list[i], 'artifact_mode'):
+            ptransform_list[i].artifact_mode = self._artifact_mode
 
     for ptransform in ptransform_list:
       pcoll = pcoll | ptransform
@@ -385,8 +402,8 @@ class _JsonPickleTransformAttributeManager(_TransformAttributeManager):
   Use Jsonpickle to save and load the attributes. Here the attributes refer
   to the list of PTransforms that are used to process the data.
 
-  jsonpickle is used to serialize the PTransforms and save it to a json file and
-  is compatible across python versions.
+  jsonpickle is used to serialize the PTransforms and save it to a json file
+  and is compatible across python versions.
   """
   @staticmethod
   def _is_remote_path(path):
@@ -470,7 +487,7 @@ class _MLTransformToPTransformMapper:
   def __init__(
       self,
       transforms: List[MLTransformProvider],
-      artifact_location: str,
+      artifact_location: Optional[str] = None,
       artifact_mode: str = ArtifactMode.PRODUCE,
       pipeline_options: Optional[PipelineOptions] = None,
   ):
@@ -494,10 +511,21 @@ class _MLTransformToPTransformMapper:
             'Transforms must be instances of MLTransformProvider and '
             'implement get_ptransform_for_processing() method.')
       # for each instance of PTransform, create a new artifact location
+      if self._parent_artifact_location:
+        artifact_location = os.path.join(
+            self._parent_artifact_location, uuid.uuid4().hex[:6])
+        artifact_mode = self.artifact_mode
+      else:
+        # for transforms that doesn't depend on artifact location, set the
+        # artifact location to None and it will be a no op when passed to the
+        # transform.get_ptransform_for_processing() method.
+        artifact_location = None
+        artifact_mode = None
+
       current_ptransform = transform.get_ptransform_for_processing(
-          artifact_location=os.path.join(
-              self._parent_artifact_location, uuid.uuid4().hex[:6]),
-          artifact_mode=self.artifact_mode)
+          artifact_location=artifact_location,
+          artifact_mode=artifact_mode,
+      )
       append_transform = hasattr(current_ptransform, 'append_transform')
       if (type(current_ptransform) !=
           previous_ptransform_type) or not append_transform:

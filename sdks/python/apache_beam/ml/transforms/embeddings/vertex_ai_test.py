@@ -244,6 +244,23 @@ class VertexAIEmbeddingsTest(unittest.TestCase):
       self.assertEqual(
           ptransform_list[i]._model_handler._underlying.model_name, model_name)
 
+  def test_mltransform_vertex_ai_with_no_artifact_location(self):
+    model_name = 'textembedding-gecko@002'
+    embedding_config = VertexAITextEmbeddings(
+        model_name=model_name, columns=[test_query_column])
+    with beam.Pipeline() as pipeline:
+      transformed_pcoll = (
+          pipeline
+          | "CreateData" >> beam.Create([{
+              test_query_column: test_query
+          }])
+          | "MLTransform" >> MLTransform().with_transform(embedding_config))
+
+      def assert_element(element):
+        assert len(element[test_query_column]) == 768
+
+      _ = (transformed_pcoll | beam.Map(assert_element))
+
 
 if __name__ == '__main__':
   unittest.main()
