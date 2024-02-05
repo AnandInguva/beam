@@ -320,6 +320,7 @@ class HuggingfaceInferenceAPIGCSLocationTest(HuggingfaceInferenceAPITest):
   def setUp(self):
     self.artifact_location = self.gcs_artifact_location = os.path.join(
         'gs://anandinguva-test/artifacts/huggingface_test', uuid.uuid4().hex)
+    self.inputs = [{test_query_column: test_query}]
 
   def tearDown(self):
     pass
