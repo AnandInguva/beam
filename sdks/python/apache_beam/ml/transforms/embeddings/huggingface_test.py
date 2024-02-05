@@ -314,11 +314,11 @@ class HuggingfaceInferenceAPITest(unittest.TestCase):
       assert_that(max_ele_pcoll, equal_to(expected_output))
 
 
-@unittest.skipIf(_HF_TOKEN is None, 'HF_TOKEN environment variable not set.')
+# @unittest.skipIf(_HF_TOKEN is None, 'HF_TOKEN environment variable not set.')
 class HuggingfaceInferenceAPIGCSLocationTest(HuggingfaceInferenceAPITest):
   def setUp(self):
     self.artifact_location = self.gcs_artifact_location = os.path.join(
-        'gs://temp-storage-for-perf-tests/tft_handler', uuid.uuid4().hex)
+        'gs://anandinguva-test/artifacts/huggingface_test', uuid.uuid4().hex)
 
   def tearDown(self):
     pass
