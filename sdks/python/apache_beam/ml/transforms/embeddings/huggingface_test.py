@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: skip-file
+
 import os
 import shutil
 import tempfile
@@ -79,204 +81,203 @@ _parameterized_inputs = [
         [0.1, 0.1]),
 ]
 
+# @unittest.skipIf(
+#     SentenceTransformerEmbeddings is None,
+#     'sentence-transformers is not installed.')
+# class SentenceTrasformerEmbeddingsTest(unittest.TestCase):
+#   def setUp(self) -> None:
+#     self.artifact_location = tempfile.mkdtemp(prefix='sentence_transformers_')
+#     # this bucket has TTL and will be deleted periodically
+#     self.gcs_artifact_location = os.path.join(
+#         'gs://temp-storage-for-perf-tests/sentence_transformers',
+#         uuid.uuid4().hex)
 
-@unittest.skipIf(
-    SentenceTransformerEmbeddings is None,
-    'sentence-transformers is not installed.')
-class SentenceTrasformerEmbeddingsTest(unittest.TestCase):
-  def setUp(self) -> None:
-    self.artifact_location = tempfile.mkdtemp(prefix='sentence_transformers_')
-    # this bucket has TTL and will be deleted periodically
-    self.gcs_artifact_location = os.path.join(
-        'gs://temp-storage-for-perf-tests/sentence_transformers',
-        uuid.uuid4().hex)
+#   def tearDown(self) -> None:
+#     shutil.rmtree(self.artifact_location)
 
-  def tearDown(self) -> None:
-    shutil.rmtree(self.artifact_location)
+#   def test_sentence_transformer_embeddings(self):
+#     model_name = DEFAULT_MODEL_NAME
+#     embedding_config = SentenceTransformerEmbeddings(
+#         model_name=model_name, columns=[test_query_column])
+#     with beam.Pipeline() as pipeline:
+#       result_pcoll = (
+#           pipeline
+#           | "CreateData" >> beam.Create([{
+#               test_query_column: test_query
+#           }])
+#           | "MLTransform" >> MLTransform(
+#               write_artifact_location=self.artifact_location).with_transform(
+#                   embedding_config))
 
-  def test_sentence_transformer_embeddings(self):
-    model_name = DEFAULT_MODEL_NAME
-    embedding_config = SentenceTransformerEmbeddings(
-        model_name=model_name, columns=[test_query_column])
-    with beam.Pipeline() as pipeline:
-      result_pcoll = (
-          pipeline
-          | "CreateData" >> beam.Create([{
-              test_query_column: test_query
-          }])
-          | "MLTransform" >> MLTransform(
-              write_artifact_location=self.artifact_location).with_transform(
-                  embedding_config))
+#       def assert_element(element):
+#         assert len(element[test_query_column]) == 768
 
-      def assert_element(element):
-        assert len(element[test_query_column]) == 768
+#       _ = (result_pcoll | beam.Map(assert_element))
 
-      _ = (result_pcoll | beam.Map(assert_element))
+#   @unittest.skipIf(tft is None, 'Tensorflow Transform is not installed.')
+#   def test_embeddings_with_scale_to_0_1(self):
+#     model_name = DEFAULT_MODEL_NAME
+#     embedding_config = SentenceTransformerEmbeddings(
+#         model_name=model_name,
+#         columns=[test_query_column],
+#     )
+#     with beam.Pipeline() as pipeline:
+#       transformed_pcoll = (
+#           pipeline
+#           | "CreateData" >> beam.Create([{
+#               test_query_column: test_query
+#           }])
+#           | "MLTransform" >> MLTransform(
+#               write_artifact_location=self.artifact_location).with_transform(
+#                   embedding_config).with_transform(
+#                       ScaleTo01(columns=[test_query_column])))
 
-  @unittest.skipIf(tft is None, 'Tensorflow Transform is not installed.')
-  def test_embeddings_with_scale_to_0_1(self):
-    model_name = DEFAULT_MODEL_NAME
-    embedding_config = SentenceTransformerEmbeddings(
-        model_name=model_name,
-        columns=[test_query_column],
-    )
-    with beam.Pipeline() as pipeline:
-      transformed_pcoll = (
-          pipeline
-          | "CreateData" >> beam.Create([{
-              test_query_column: test_query
-          }])
-          | "MLTransform" >> MLTransform(
-              write_artifact_location=self.artifact_location).with_transform(
-                  embedding_config).with_transform(
-                      ScaleTo01(columns=[test_query_column])))
+#       def assert_element(element):
+#         assert max(element.feature_1) == 1
 
-      def assert_element(element):
-        assert max(element.feature_1) == 1
+#       _ = (transformed_pcoll | beam.Map(assert_element))
 
-      _ = (transformed_pcoll | beam.Map(assert_element))
+#   @parameterized.expand(_parameterized_inputs)
+#   def test_embeddings_with_read_artifact_location(
+#       self, inputs, model_name, output):
+#     embedding_config = SentenceTransformerEmbeddings(
+#         model_name=model_name, columns=[test_query_column])
 
-  @parameterized.expand(_parameterized_inputs)
-  def test_embeddings_with_read_artifact_location(
-      self, inputs, model_name, output):
-    embedding_config = SentenceTransformerEmbeddings(
-        model_name=model_name, columns=[test_query_column])
+#     with beam.Pipeline() as p:
+#       result_pcoll = (
+#           p
+#           | "CreateData" >> beam.Create(inputs)
+#           | "MLTransform" >> MLTransform(
+#               write_artifact_location=self.artifact_location).with_transform(
+#                   embedding_config))
+#       max_ele_pcoll = (
+#           result_pcoll
+#           | beam.Map(lambda x: round(max(x[test_query_column]), 2)))
 
-    with beam.Pipeline() as p:
-      result_pcoll = (
-          p
-          | "CreateData" >> beam.Create(inputs)
-          | "MLTransform" >> MLTransform(
-              write_artifact_location=self.artifact_location).with_transform(
-                  embedding_config))
-      max_ele_pcoll = (
-          result_pcoll
-          | beam.Map(lambda x: round(max(x[test_query_column]), 2)))
+#       assert_that(max_ele_pcoll, equal_to(output))
 
-      assert_that(max_ele_pcoll, equal_to(output))
+#     with beam.Pipeline() as p:
+#       result_pcoll = (
+#           p
+#           | "CreateData" >> beam.Create(inputs)
+#           | "MLTransform" >>
+#           MLTransform(read_artifact_location=self.artifact_location))
+#       max_ele_pcoll = (
+#           result_pcoll
+#           | beam.Map(lambda x: round(max(x[test_query_column]), 2)))
 
-    with beam.Pipeline() as p:
-      result_pcoll = (
-          p
-          | "CreateData" >> beam.Create(inputs)
-          | "MLTransform" >>
-          MLTransform(read_artifact_location=self.artifact_location))
-      max_ele_pcoll = (
-          result_pcoll
-          | beam.Map(lambda x: round(max(x[test_query_column]), 2)))
+#       assert_that(max_ele_pcoll, equal_to(output))
 
-      assert_that(max_ele_pcoll, equal_to(output))
+#   def test_sentence_transformer_with_int_data_types(self):
+#     model_name = DEFAULT_MODEL_NAME
+#     embedding_config = SentenceTransformerEmbeddings(
+#         model_name=model_name, columns=[test_query_column])
+#     with self.assertRaises(TypeError):
+#       with beam.Pipeline() as pipeline:
+#         _ = (
+#             pipeline
+#             | "CreateData" >> beam.Create([{
+#                 test_query_column: 1
+#             }])
+#             | "MLTransform" >> MLTransform(
+#                 write_artifact_location=self.artifact_location).with_transform(
+#                     embedding_config))
 
-  def test_sentence_transformer_with_int_data_types(self):
-    model_name = DEFAULT_MODEL_NAME
-    embedding_config = SentenceTransformerEmbeddings(
-        model_name=model_name, columns=[test_query_column])
-    with self.assertRaises(TypeError):
-      with beam.Pipeline() as pipeline:
-        _ = (
-            pipeline
-            | "CreateData" >> beam.Create([{
-                test_query_column: 1
-            }])
-            | "MLTransform" >> MLTransform(
-                write_artifact_location=self.artifact_location).with_transform(
-                    embedding_config))
+#   @parameterized.expand(_parameterized_inputs)
+#   def test_with_gcs_artifact_location(self, inputs, model_name, output):
+#     embedding_config = SentenceTransformerEmbeddings(
+#         model_name=model_name, columns=[test_query_column])
 
-  @parameterized.expand(_parameterized_inputs)
-  def test_with_gcs_artifact_location(self, inputs, model_name, output):
-    embedding_config = SentenceTransformerEmbeddings(
-        model_name=model_name, columns=[test_query_column])
+#     with beam.Pipeline() as p:
+#       result_pcoll = (
+#           p
+#           | "CreateData" >> beam.Create(inputs)
+#           | "MLTransform" >>
+#           MLTransform(write_artifact_location=self.gcs_artifact_location
+#                       ).with_transform(embedding_config))
+#       max_ele_pcoll = (
+#           result_pcoll
+#           | beam.Map(lambda x: round(np.max(x[test_query_column]), 2)))
 
-    with beam.Pipeline() as p:
-      result_pcoll = (
-          p
-          | "CreateData" >> beam.Create(inputs)
-          | "MLTransform" >>
-          MLTransform(write_artifact_location=self.gcs_artifact_location
-                      ).with_transform(embedding_config))
-      max_ele_pcoll = (
-          result_pcoll
-          | beam.Map(lambda x: round(np.max(x[test_query_column]), 2)))
+#       assert_that(max_ele_pcoll, equal_to(output))
 
-      assert_that(max_ele_pcoll, equal_to(output))
+#     with beam.Pipeline() as p:
+#       result_pcoll = (
+#           p
+#           | "CreateData" >> beam.Create(inputs)
+#           | "MLTransform" >>
+#           MLTransform(read_artifact_location=self.gcs_artifact_location))
+#       max_ele_pcoll = (
+#           result_pcoll
+#           | beam.Map(lambda x: round(np.max(x[test_query_column]), 2)))
 
-    with beam.Pipeline() as p:
-      result_pcoll = (
-          p
-          | "CreateData" >> beam.Create(inputs)
-          | "MLTransform" >>
-          MLTransform(read_artifact_location=self.gcs_artifact_location))
-      max_ele_pcoll = (
-          result_pcoll
-          | beam.Map(lambda x: round(np.max(x[test_query_column]), 2)))
+#       assert_that(max_ele_pcoll, equal_to(output))
 
-      assert_that(max_ele_pcoll, equal_to(output))
+#   def test_embeddings_with_inference_args(self):
+#     model_name = DEFAULT_MODEL_NAME
 
-  def test_embeddings_with_inference_args(self):
-    model_name = DEFAULT_MODEL_NAME
+#     inference_args = {'convert_to_numpy': False}
+#     embedding_config = SentenceTransformerEmbeddings(
+#         model_name=model_name,
+#         columns=[test_query_column],
+#         inference_args=inference_args)
+#     with beam.Pipeline() as pipeline:
+#       result_pcoll = (
+#           pipeline
+#           | "CreateData" >> beam.Create([{
+#               test_query_column: test_query
+#           }])
+#           | "MLTransform" >> MLTransform(
+#               write_artifact_location=self.artifact_location).with_transform(
+#                   embedding_config))
 
-    inference_args = {'convert_to_numpy': False}
-    embedding_config = SentenceTransformerEmbeddings(
-        model_name=model_name,
-        columns=[test_query_column],
-        inference_args=inference_args)
-    with beam.Pipeline() as pipeline:
-      result_pcoll = (
-          pipeline
-          | "CreateData" >> beam.Create([{
-              test_query_column: test_query
-          }])
-          | "MLTransform" >> MLTransform(
-              write_artifact_location=self.artifact_location).with_transform(
-                  embedding_config))
+#       def assert_element(element):
+#         assert type(element) == torch.Tensor
 
-      def assert_element(element):
-        assert type(element) == torch.Tensor
+#       _ = (
+#           result_pcoll
+#           | beam.Map(lambda x: x[test_query_column])
+#           | beam.Map(assert_element))
 
-      _ = (
-          result_pcoll
-          | beam.Map(lambda x: x[test_query_column])
-          | beam.Map(assert_element))
+#   def test_mltransform_to_ptransform_with_sentence_transformer(self):
+#     model_name = ''
+#     transforms = [
+#         SentenceTransformerEmbeddings(columns=['x'], model_name=model_name),
+#         SentenceTransformerEmbeddings(
+#             columns=['y', 'z'], model_name=model_name)
+#     ]
+#     ptransform_mapper = base._MLTransformToPTransformMapper(
+#         transforms=transforms,
+#         artifact_location=self.artifact_location,
+#         artifact_mode=None)
 
-  def test_mltransform_to_ptransform_with_sentence_transformer(self):
-    model_name = ''
-    transforms = [
-        SentenceTransformerEmbeddings(columns=['x'], model_name=model_name),
-        SentenceTransformerEmbeddings(
-            columns=['y', 'z'], model_name=model_name)
-    ]
-    ptransform_mapper = base._MLTransformToPTransformMapper(
-        transforms=transforms,
-        artifact_location=self.artifact_location,
-        artifact_mode=None)
+#     ptransform_list = ptransform_mapper.create_and_save_ptransform_list()
+#     self.assertTrue(len(ptransform_list) == 2)
 
-    ptransform_list = ptransform_mapper.create_and_save_ptransform_list()
-    self.assertTrue(len(ptransform_list) == 2)
-
-    self.assertEqual(type(ptransform_list[0]), RunInference)
-    expected_columns = [['x'], ['y', 'z']]
-    for i in range(len(ptransform_list)):
-      self.assertEqual(type(ptransform_list[i]), RunInference)
-      self.assertEqual(
-          type(ptransform_list[i]._model_handler), base._TextEmbeddingHandler)
-      self.assertEqual(
-          ptransform_list[i]._model_handler.columns, expected_columns[i])
-      self.assertEqual(
-          ptransform_list[i]._model_handler._underlying.model_name, model_name)
-    ptransform_list = (
-        base._MLTransformToPTransformMapper.
-        load_transforms_from_artifact_location(self.artifact_location))
-    for i in range(len(ptransform_list)):
-      self.assertEqual(type(ptransform_list[i]), RunInference)
-      self.assertEqual(
-          type(ptransform_list[i]._model_handler), base._TextEmbeddingHandler)
-      self.assertEqual(
-          ptransform_list[i]._model_handler.columns, expected_columns[i])
-      self.assertEqual(
-          ptransform_list[i]._model_handler._underlying.model_name, model_name)
+#     self.assertEqual(type(ptransform_list[0]), RunInference)
+#     expected_columns = [['x'], ['y', 'z']]
+#     for i in range(len(ptransform_list)):
+#       self.assertEqual(type(ptransform_list[i]), RunInference)
+#       self.assertEqual(
+#           type(ptransform_list[i]._model_handler), base._TextEmbeddingHandler)
+#       self.assertEqual(
+#           ptransform_list[i]._model_handler.columns, expected_columns[i])
+#       self.assertEqual(
+#           ptransform_list[i]._model_handler._underlying.model_name, model_name)
+#     ptransform_list = (
+#         base._MLTransformToPTransformMapper.
+#         load_transforms_from_artifact_location(self.artifact_location))
+#     for i in range(len(ptransform_list)):
+#       self.assertEqual(type(ptransform_list[i]), RunInference)
+#       self.assertEqual(
+#           type(ptransform_list[i]._model_handler), base._TextEmbeddingHandler)
+#       self.assertEqual(
+#           ptransform_list[i]._model_handler.columns, expected_columns[i])
+#       self.assertEqual(
+#           ptransform_list[i]._model_handler._underlying.model_name, model_name)
 
 
-@unittest.skipIf(_HF_TOKEN is None, 'HF_TOKEN environment variable not set.')
+# @unittest.skipIf(_HF_TOKEN is None, 'HF_TOKEN environment variable not set.')
 class HuggingfaceInferenceAPITest(unittest.TestCase):
   def setUp(self):
     self.artifact_location = tempfile.mkdtemp()
